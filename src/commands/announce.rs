@@ -7,11 +7,21 @@
 
 #![allow(dead_code)]
 
+use std::io::Write;
+
 use clap::{Args, Subcommand};
+use tabled::settings::{Padding, Style};
+use tabled::{Table, Tabled};
 
 use crate::domain::announcement::{categories, Category};
 use crate::error::SiftError;
 use crate::output::{self, Format, RenderRow};
+
+/// Sentinel used in user-facing output for "no value here". Single
+/// dash matches the convention `pandas` / `awk` users expect; sift
+/// commands should never emit a bare empty string for a column that
+/// is semantically nullable.
+const MISSING: &str = "-";
 
 #[derive(Subcommand, Debug)]
 pub enum AnnounceCmd {
@@ -69,8 +79,17 @@ pub fn run(cmd: AnnounceCmd, fmt: Format) -> Result<(), SiftError> {
 
 /// One row of `sift announce types` output. Owned strings — they come
 /// from the runtime-deserialized dictionary, so we cannot promise
-/// `&'static str`.
-#[derive(Debug, Clone, serde::Serialize)]
+/// `&'static str`. Empty slots are filled with [`MISSING`] (`-`)
+/// instead of an empty string so all three output formats render
+/// consistently and downstream tools (pandas, awk) get an explicit
+/// "no value" marker.
+///
+/// Two derives coexist on this struct:
+/// - `Tabled` powers the human-facing borderless table (the
+///   `--format table` path, which is also the bare default).
+/// - `Serialize` + `RenderRow` keep the existing TSV / NDJSON paths
+///   going through `output::render`.
+#[derive(Debug, Clone, serde::Serialize, Tabled)]
 struct TypeRow {
     zh: String,
     category: String,
@@ -91,22 +110,44 @@ fn run_types(fmt: Format) -> Result<(), SiftError> {
     let rows: Vec<TypeRow> = categories().iter().map(to_type_row).collect();
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
-    output::render(&mut handle, fmt, &rows)
+    match fmt {
+        // Default human-facing path: borderless `tabled` table. Two
+        // characters of right padding give the same visual rhythm as
+        // sift's other commands, which still hand-roll alignment.
+        Format::Table => render_tabled(&mut handle, &rows),
+        // TSV / NDJSON stay on the generic RenderRow pipeline; their
+        // semantics (tab-separated body, one JSON object per line)
+        // are unaffected by the table-only restyling.
+        Format::Tsv | Format::Ndjson => output::render(&mut handle, fmt, &rows),
+    }
 }
 
-/// Map a `Category` to one row of the `types` output. For aggregates,
-/// `category` is the sentinel `"(本地聚合)"` and `note` lists the
-/// rolled-up `zh` values so the user can copy-paste any of them.
+/// Render rows through the `tabled` crate with `Style::empty()` and
+/// `Padding(0, 2, 0, 0)` — borderless, two-space inter-column gap,
+/// no top/bottom padding. Mirrors the F2 tech_design tabled
+/// convention and keeps the visual identity uniform across sift
+/// commands.
+fn render_tabled<W: Write>(out: &mut W, rows: &[TypeRow]) -> Result<(), SiftError> {
+    let mut t = Table::new(rows);
+    t.with(Style::empty()).with(Padding::new(0, 2, 0, 0));
+    writeln!(out, "{t}").map_err(|e| SiftError::Internal(format!("io: {e}")))?;
+    Ok(())
+}
+
+/// Map a `Category` to one row of the `types` output. Both "missing"
+/// slots — `category` for an aggregate, `note` for an official entry
+/// — get [`MISSING`] (`-`) so the table reads symmetrically and
+/// machine consumers see an explicit non-empty token.
 fn to_type_row(c: &Category) -> TypeRow {
     match (&c.category, &c.aggregates) {
         (Some(cat), None) => TypeRow {
             zh: c.zh.clone(),
             category: cat.clone(),
-            note: String::new(),
+            note: MISSING.into(),
         },
         (None, Some(aggs)) => TypeRow {
             zh: c.zh.clone(),
-            category: "(本地聚合)".into(),
+            category: MISSING.into(),
             note: format!("aggregates {}", aggs.join(" + ")),
         },
         _ => {
@@ -155,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn to_type_row_preserves_official_category_with_empty_note() {
+    fn to_type_row_uses_dash_placeholder_for_empty_note() {
         let cat = Category {
             zh: "年报".into(),
             category: Some("category_ndbg_szsh".into()),
@@ -164,11 +205,11 @@ mod tests {
         let r = to_type_row(&cat);
         assert_eq!(r.zh, "年报");
         assert_eq!(r.category, "category_ndbg_szsh");
-        assert!(r.note.is_empty());
+        assert_eq!(r.note, MISSING);
     }
 
     #[test]
-    fn to_type_row_flags_aggregate_with_sentinel_category() {
+    fn to_type_row_uses_dash_placeholder_for_aggregate_category() {
         let cat = Category {
             zh: "定期报告".into(),
             category: None,
@@ -181,33 +222,66 @@ mod tests {
         };
         let r = to_type_row(&cat);
         assert_eq!(r.zh, "定期报告");
-        assert_eq!(r.category, "(本地聚合)");
+        assert_eq!(r.category, MISSING);
         assert!(r.note.starts_with("aggregates "));
         assert!(r.note.contains("年报"));
         assert!(r.note.contains("三季报"));
     }
 
     #[test]
-    fn run_types_renders_27_rows_to_table() {
-        // Capture stdout would require redirecting; instead, exercise
-        // the row construction + RenderRow contract directly.
+    fn run_types_rows_match_dictionary_shape() {
         let rows: Vec<TypeRow> = categories().iter().map(to_type_row).collect();
         assert_eq!(rows.len(), 27);
-        // First and last match the dictionary shape.
+        // First entry: official `年报` with `-` in note.
         assert_eq!(rows[0].zh, "年报");
         assert_eq!(rows[0].category, "category_ndbg_szsh");
+        assert_eq!(rows[0].note, MISSING);
+        // Last entry: aggregate `定期报告` with `-` in category.
         assert_eq!(rows[26].zh, "定期报告");
-        assert_eq!(rows[26].category, "(本地聚合)");
+        assert_eq!(rows[26].category, MISSING);
+        assert!(rows[26].note.contains("年报"));
+    }
 
-        // Render through every format to confirm RenderRow wiring.
-        for fmt in [Format::Table, Format::Tsv, Format::Ndjson] {
+    #[test]
+    fn table_format_uses_tabled_borderless_style() {
+        let rows: Vec<TypeRow> = categories().iter().map(to_type_row).collect();
+        let mut buf = Vec::<u8>::new();
+        render_tabled(&mut buf, &rows).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        // Borderless: no box-drawing characters anywhere. (`+` is
+        // excluded because the aggregate-row note legitimately
+        // contains it, e.g. `aggregates 年报 + 半年报 + ...`.)
+        for ch in ['|', '─', '│', '┌', '┐', '└', '┘'] {
+            assert!(
+                !s.contains(ch),
+                "borderless table should not contain {ch:?}: {s}"
+            );
+        }
+        // Header from `Tabled` derive uses field names verbatim.
+        let first_line = s.lines().next().unwrap();
+        assert!(first_line.contains("zh"));
+        assert!(first_line.contains("category"));
+        assert!(first_line.contains("note"));
+        // Body contains expected dictionary entries + dash placeholder.
+        assert!(s.contains("年报"));
+        assert!(s.contains("定期报告"));
+        assert!(s.contains(MISSING));
+        assert!(s.contains("category_ndbg_szsh"));
+    }
+
+    #[test]
+    fn tsv_and_ndjson_paths_still_use_render_pipeline() {
+        // RenderRow contract: TSV / NDJSON go through `output::render`.
+        let rows: Vec<TypeRow> = categories().iter().map(to_type_row).collect();
+        for fmt in [Format::Tsv, Format::Ndjson] {
             let mut buf = Vec::<u8>::new();
             output::render(&mut buf, fmt, &rows).unwrap();
             let s = String::from_utf8(buf).unwrap();
             assert!(!s.is_empty(), "{fmt:?} produced no output");
-            // Every output mentions both `年报` and the aggregate sentinel.
             assert!(s.contains("年报"));
             assert!(s.contains("定期报告"));
+            // Dash placeholder reaches all formats.
+            assert!(s.contains(MISSING));
         }
     }
 }

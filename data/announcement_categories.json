@@ -1,0 +1,32 @@
+[
+  { "zh": "年报",            "category": "category_ndbg_szsh" },
+  { "zh": "半年报",          "category": "category_bndbg_szsh" },
+  { "zh": "一季报",          "category": "category_yjdbg_szsh" },
+  { "zh": "三季报",          "category": "category_sjdbg_szsh" },
+  { "zh": "业绩预告",        "category": "category_yjygjxz_szsh" },
+  { "zh": "权益分派",        "category": "category_qyfpxzcs_szsh" },
+  { "zh": "董事会",          "category": "category_dshgg_szsh" },
+  { "zh": "监事会",          "category": "category_jshgg_szsh" },
+  { "zh": "股东会",          "category": "category_gddh_szsh" },
+  { "zh": "日常经营",        "category": "category_rcjy_szsh" },
+  { "zh": "公司治理",        "category": "category_gszl_szsh" },
+  { "zh": "中介报告",        "category": "category_zj_szsh" },
+  { "zh": "首发",            "category": "category_sf_szsh" },
+  { "zh": "增发",            "category": "category_zf_szsh" },
+  { "zh": "股权激励",        "category": "category_gqjl_szsh" },
+  { "zh": "配股",            "category": "category_pg_szsh" },
+  { "zh": "解禁",            "category": "category_jj_szsh" },
+  { "zh": "公司债",          "category": "category_gszq_szsh" },
+  { "zh": "可转债",          "category": "category_kzzq_szsh" },
+  { "zh": "其他融资",        "category": "category_qtrz_szsh" },
+  { "zh": "股权变动",        "category": "category_gqbd_szsh" },
+  { "zh": "补充更正",        "category": "category_bcgz_szsh" },
+  { "zh": "澄清致歉",        "category": "category_cqdq_szsh" },
+  { "zh": "风险提示",        "category": "category_fxts_szsh" },
+  { "zh": "特别处理和退市",  "category": "category_tbclts_szsh" },
+  { "zh": "退市整理期",      "category": "category_tszlq_szsh" },
+  {
+    "zh": "定期报告",
+    "aggregates": ["年报", "半年报", "一季报", "三季报"]
+  }
+]

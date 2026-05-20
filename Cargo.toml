@@ -19,6 +19,7 @@ dirs = "5"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 duckdb = { version = "1", features = ["bundled"] }
 blake3 = "1"
+tabled = "0.20"
 
 [dev-dependencies]
 mockito = "1"

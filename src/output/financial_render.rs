@@ -28,6 +28,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::domain::{FinancialRow, Statement, Symbol, Unit};
 use crate::error::SiftError;
+use crate::output::tabular::{render_tabular, TabularView};
 use crate::output::Format;
 
 /// One symbol's pivoted data.
@@ -230,7 +231,7 @@ fn render_table<W: Write>(out: &mut W, table: &PivotedTable) -> Result<(), SiftE
         for (item, vals) in &block.items {
             let mut row = vec![item.clone()];
             for v in vals {
-                row.push(v.map(format_number).unwrap_or_default());
+                row.push(v.map(|n| format_number(n, block.unit)).unwrap_or_default());
             }
             rows.push(row);
         }
@@ -248,51 +249,87 @@ fn aggregate_sources(sources: &[String]) -> String {
 }
 
 fn render_tsv<W: Write>(out: &mut W, table: &PivotedTable) -> Result<(), SiftError> {
-    for (i, block) in table.blocks.iter().enumerate() {
-        if i > 0 {
-            writeln!(out).map_err(io_err)?;
-        }
-        // Comment-style metadata header so machine consumers can
-        // `grep -v '^#'` to recover the raw TSV body. `_source` lives
-        // here (aggregated across periods via `+`) rather than as a
-        // body row — keeps the TSV a clean rectangle where every body
-        // row is one period's observation.
-        writeln!(
-            out,
-            "# _symbol={secucode} _name={name} _scope={scope} _currency={currency} _unit={unit} _source={source}",
-            secucode = format_secucode(&block.symbol),
-            name = block.name,
-            scope = block.scope,
-            currency = block.currency,
-            unit = block.unit.as_str(),
-            source = aggregate_sources(&block.sources),
-        )
-        .map_err(io_err)?;
+    render_tabular(out, &FinancialsTsvView::new(table))
+}
 
-        // Transposed body: rows = periods (one row per observation),
-        // columns = financial items. Leftmost column is `_period`
-        // (ISO date) so downstream tools key on it without inspecting
-        // the schema.
-        let mut hdr = String::from("_period");
-        for (item, _) in &block.items {
-            check_tsv_cell(item)?;
-            hdr.push('\t');
-            hdr.push_str(item);
-        }
-        writeln!(out, "{hdr}").map_err(io_err)?;
+/// Flatten a [`PivotedTable`] into one TSV row per `(symbol, period)`
+/// observation. The first seven columns carry context (`symbol`,
+/// `name`, `period`, `source`, `scope`, `currency`, `unit`); the rest
+/// are financial items, taken as the union across every symbol in
+/// first-seen order. A symbol that does not report a given item gets
+/// an empty cell in that column — pandas reads it as NaN.
+///
+/// Construction is `O(N_items_total)` (one hash insert per item) so
+/// `columns()` / `rows()` can stay cheap.
+struct FinancialsTsvView<'a> {
+    table: &'a PivotedTable,
+    item_cols: Vec<String>,
+}
 
-        for (pi, period) in block.periods.iter().enumerate() {
-            let mut line = format_date(*period);
-            for (_, vals) in &block.items {
-                line.push('\t');
-                if let Some(Some(n)) = vals.get(pi) {
-                    line.push_str(&format_number(*n));
+/// Context columns emitted before the financial-item columns. Fixed
+/// order; downstream tools key on `symbol` + `period`.
+const CONTEXT_COLS: &[&str] = &[
+    "symbol", "name", "period", "source", "scope", "currency", "unit",
+];
+
+impl<'a> FinancialsTsvView<'a> {
+    fn new(table: &'a PivotedTable) -> Self {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut item_cols: Vec<String> = Vec::new();
+        for block in &table.blocks {
+            for (item, _) in &block.items {
+                if seen.insert(item.clone()) {
+                    item_cols.push(item.clone());
                 }
             }
-            writeln!(out, "{line}").map_err(io_err)?;
         }
+        Self { table, item_cols }
     }
-    Ok(())
+}
+
+impl<'a> TabularView for FinancialsTsvView<'a> {
+    fn columns(&self) -> Vec<&str> {
+        let mut cols = Vec::with_capacity(CONTEXT_COLS.len() + self.item_cols.len());
+        cols.extend_from_slice(CONTEXT_COLS);
+        for it in &self.item_cols {
+            cols.push(it.as_str());
+        }
+        cols
+    }
+
+    fn rows(&self) -> Vec<Vec<String>> {
+        let total_rows: usize = self.table.blocks.iter().map(|b| b.periods.len()).sum();
+        let mut out: Vec<Vec<String>> = Vec::with_capacity(total_rows);
+        for block in &self.table.blocks {
+            // Index this block's items by name so the outer item-column
+            // loop is O(1) per cell instead of scanning `block.items`.
+            let lookup: HashMap<&str, &[Option<f64>]> = block
+                .items
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_slice()))
+                .collect();
+            for (pi, period) in block.periods.iter().enumerate() {
+                let mut row: Vec<String> = Vec::with_capacity(CONTEXT_COLS.len() + self.item_cols.len());
+                row.push(format_secucode(&block.symbol));
+                row.push(block.name.clone());
+                row.push(format_date(*period));
+                row.push(block.sources.get(pi).cloned().unwrap_or_default());
+                row.push(block.scope.clone());
+                row.push(block.currency.clone());
+                row.push(block.unit.as_str().into());
+                for it in &self.item_cols {
+                    let cell = lookup
+                        .get(it.as_str())
+                        .and_then(|vals| vals.get(pi).copied().flatten())
+                        .map(|n| format_number(n, block.unit))
+                        .unwrap_or_default();
+                    row.push(cell);
+                }
+                out.push(row);
+            }
+        }
+        out
+    }
 }
 
 fn render_ndjson<W: Write>(out: &mut W, table: &PivotedTable) -> Result<(), SiftError> {
@@ -382,15 +419,6 @@ fn write_row<W: Write>(
     Ok(())
 }
 
-fn check_tsv_cell(s: &str) -> Result<(), SiftError> {
-    if s.contains('\t') || s.contains('\n') {
-        return Err(SiftError::Internal(
-            "tsv: control char in cell".into(),
-        ));
-    }
-    Ok(())
-}
-
 fn format_secucode(sym: &Symbol) -> String {
     format!("{}.{}", sym.code, sym.market.as_upper())
 }
@@ -400,14 +428,28 @@ fn format_date(d: time::Date) -> String {
         .unwrap_or_default()
 }
 
-fn format_number(v: f64) -> String {
+/// Format a numeric cell for table / TSV output.
+///
+/// - `Unit::Raw`: integer-valued cells render with no decimal, otherwise
+///   Rust's default `f64` formatting (full precision).
+/// - `Unit::Wan` / `Unit::Yi`: always two decimals. Users who pick a
+///   scaled unit are signalling "show me round numbers"; rendering
+///   `12345.6789万` defeats the point.
+///
+/// `NaN` always renders as the empty string so pandas reads it as NaN.
+fn format_number(v: f64, unit: Unit) -> String {
     if v.is_nan() {
         return String::new();
     }
-    if v.fract() == 0.0 && v.abs() < 1e15 {
-        format!("{v:.0}")
-    } else {
-        format!("{v}")
+    match unit {
+        Unit::Wan | Unit::Yi => format!("{v:.2}"),
+        Unit::Raw => {
+            if v.fract() == 0.0 && v.abs() < 1e15 {
+                format!("{v:.0}")
+            } else {
+                format!("{v}")
+            }
+        }
     }
 }
 
@@ -640,54 +682,115 @@ mod tests {
         assert!(lines[header_positions[1] - 1].is_empty());
     }
 
+    fn render_tsv_string(rows: Vec<FinancialRow>) -> String {
+        let t = pivot(rows, None, &empty_lookup());
+        let mut buf = Vec::<u8>::new();
+        render(&mut buf, &t, Format::Tsv).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
     #[test]
-    fn render_tsv_columns_are_items_rows_are_periods() {
-        // Two periods × two items → 2 body rows × 3 columns
-        // (`_period`, 营业总收入, 归母净利润). `_source` lives on the
-        // comment header line, not as a body row, so the body is a
-        // clean rectangle keyed on `_period`.
-        let rows = vec![
+    fn tsv_header_is_canonical_hash_prefix_with_context_then_item_columns() {
+        let s = render_tsv_string(vec![row(
+            "600519",
+            Market::CnA,
+            "贵州茅台",
+            "营业总收入",
+            100.0,
+            d(2024, 12, 31),
+            SourceTag::Sina,
+        )]);
+        let header = s.lines().next().unwrap();
+        // bio-ncbi convention: no space after `#`.
+        assert!(!header.starts_with("# "), "got: {header}");
+        assert_eq!(
+            header,
+            "#symbol\tname\tperiod\tsource\tscope\tcurrency\tunit\t营业总收入"
+        );
+    }
+
+    #[test]
+    fn tsv_emits_one_row_per_symbol_period_pair_with_context_cells() {
+        let s = render_tsv_string(vec![
             row("600519", Market::CnA, "贵州茅台", "营业总收入", 100.0, d(2024, 12, 31), SourceTag::Sina),
             row("600519", Market::CnA, "贵州茅台", "归母净利润", 50.0, d(2024, 12, 31), SourceTag::Sina),
             row("600519", Market::CnA, "贵州茅台", "营业总收入", 80.0, d(2025, 12, 31), SourceTag::Sina),
             row("600519", Market::CnA, "贵州茅台", "归母净利润", 40.0, d(2025, 12, 31), SourceTag::Sina),
-        ];
-        let t = pivot(rows, None, &empty_lookup());
-        let mut buf = Vec::<u8>::new();
-        render(&mut buf, &t, Format::Tsv).unwrap();
-        let s = String::from_utf8(buf).unwrap();
+        ]);
         let lines: Vec<&str> = s.lines().collect();
-        // Line 0: comment metadata, now including aggregated `_source`.
-        assert!(lines[0].starts_with("# _symbol="));
-        assert!(lines[0].contains("_name=贵州茅台"));
-        assert!(lines[0].contains("_source=sina"));
-        // Line 1: header row — `_period` then item columns.
-        assert_eq!(lines[1], "_period\t营业总收入\t归母净利润");
-        // Lines 2/3: one row per period, newest first.
-        assert_eq!(lines[2], "2025-12-31\t80\t40");
-        assert_eq!(lines[3], "2024-12-31\t100\t50");
-        // `_source` body row is gone; `_period_type` still absent.
-        assert!(!s.contains("\n_source\t"));
-        assert!(!s.contains("_period_type"));
+        // 1 header + 2 data rows, newest first.
+        assert_eq!(lines.len(), 3);
+        assert_eq!(
+            lines[1],
+            "600519.CN-A\t贵州茅台\t2025-12-31\tsina\tconsolidated\tCNY\traw\t80\t40"
+        );
+        assert_eq!(
+            lines[2],
+            "600519.CN-A\t贵州茅台\t2024-12-31\tsina\tconsolidated\tCNY\traw\t100\t50"
+        );
     }
 
     #[test]
-    fn render_tsv_aggregates_source_in_header_when_mixed() {
-        // Different sources per period collapse to `eastmoney+sina`
-        // in the header — same convention as the table renderer.
-        let rows = vec![
+    fn tsv_multi_symbol_is_single_table_no_blank_separator() {
+        // Two symbols, two periods each → 1 header + 4 data rows.
+        // Critical: no blank line between symbol blocks.
+        let s = render_tsv_string(vec![
+            row("600519", Market::CnA, "茅台", "营业总收入", 1.0, d(2024, 12, 31), SourceTag::EastMoney),
+            row("600519", Market::CnA, "茅台", "营业总收入", 2.0, d(2025, 12, 31), SourceTag::EastMoney),
+            row("000858", Market::CnA, "五粮液", "营业总收入", 3.0, d(2024, 12, 31), SourceTag::EastMoney),
+            row("000858", Market::CnA, "五粮液", "营业总收入", 4.0, d(2025, 12, 31), SourceTag::EastMoney),
+        ]);
+        let lines: Vec<&str> = s.lines().collect();
+        assert_eq!(lines.len(), 5);
+        for l in &lines[1..] {
+            assert!(!l.is_empty(), "no blank separators allowed");
+        }
+        // Symbols emit in input order; within each, periods newest-first.
+        assert!(lines[1].starts_with("600519.CN-A\t茅台\t2025-12-31"));
+        assert!(lines[2].starts_with("600519.CN-A\t茅台\t2024-12-31"));
+        assert!(lines[3].starts_with("000858.CN-A\t五粮液\t2025-12-31"));
+        assert!(lines[4].starts_with("000858.CN-A\t五粮液\t2024-12-31"));
+    }
+
+    #[test]
+    fn tsv_item_columns_are_union_in_first_seen_order_across_symbols() {
+        // 600519 reports A then B; 000001 (bank) reports C (bank-only).
+        // Union order = [A, B, C]; the bank's A/B cells are empty, and
+        // 600519's C cell is empty.
+        let s = render_tsv_string(vec![
+            row("600519", Market::CnA, "茅台", "营业总收入", 100.0, d(2024, 12, 31), SourceTag::EastMoney),
+            row("600519", Market::CnA, "茅台", "归母净利润", 50.0, d(2024, 12, 31), SourceTag::EastMoney),
+            row("000001", Market::CnA, "平安银行", "利息净收入", 999.0, d(2024, 12, 31), SourceTag::EastMoney),
+        ]);
+        let lines: Vec<&str> = s.lines().collect();
+        let header = lines[0];
+        assert!(header.ends_with("\t营业总收入\t归母净利润\t利息净收入"), "got: {header}");
+        // 600519 row: filled A/B, empty C.
+        let r1: Vec<&str> = lines[1].split('\t').collect();
+        assert_eq!(*r1.last().unwrap(), ""); // 利息净收入 empty
+        assert_eq!(r1[r1.len() - 2], "50"); // 归母净利润
+        assert_eq!(r1[r1.len() - 3], "100"); // 营业总收入
+        // bank row: empty A/B, filled C.
+        let r2: Vec<&str> = lines[2].split('\t').collect();
+        assert_eq!(r2[r2.len() - 3], ""); // 营业总收入 empty
+        assert_eq!(r2[r2.len() - 2], ""); // 归母净利润 empty
+        assert_eq!(*r2.last().unwrap(), "999"); // 利息净收入
+    }
+
+    #[test]
+    fn tsv_source_column_is_per_row_not_aggregated() {
+        // auto mode might pick different sources per period; the TSV
+        // `source` cell carries the per-row truth, never aggregated.
+        let s = render_tsv_string(vec![
             row("600519", Market::CnA, "茅台", "营业总收入", 100.0, d(2024, 12, 31), SourceTag::EastMoney),
             row("600519", Market::CnA, "茅台", "营业总收入", 80.0, d(2025, 12, 31), SourceTag::Sina),
-        ];
-        let t = pivot(rows, None, &empty_lookup());
-        let mut buf = Vec::<u8>::new();
-        render(&mut buf, &t, Format::Tsv).unwrap();
-        let s = String::from_utf8(buf).unwrap();
-        assert!(
-            s.lines().next().unwrap().contains("_source=eastmoney+sina"),
-            "header line: {}",
-            s.lines().next().unwrap()
-        );
+        ]);
+        let lines: Vec<&str> = s.lines().collect();
+        // Newest first → row 1 (2025) is sina, row 2 (2024) is eastmoney.
+        assert!(lines[1].contains("\tsina\t"), "row 1: {}", lines[1]);
+        assert!(lines[2].contains("\teastmoney\t"), "row 2: {}", lines[2]);
+        // No aggregated `+` artifact anywhere.
+        assert!(!s.contains("eastmoney+sina"));
     }
 
     #[test]
@@ -747,6 +850,71 @@ mod tests {
         let yi = apply_unit(rows, Unit::Yi);
         assert_eq!(yi[0].value, 1.0);
         assert_eq!(yi[0].unit, Unit::Yi);
+    }
+
+    #[test]
+    fn format_number_raw_keeps_integer_form_and_full_precision() {
+        // Raw integer-valued: no trailing `.0`.
+        assert_eq!(format_number(12345.0, Unit::Raw), "12345");
+        // Raw fractional: default `f64` formatting.
+        assert_eq!(format_number(12345.6789, Unit::Raw), "12345.6789");
+        // NaN → empty cell so pandas reads as NaN.
+        assert_eq!(format_number(f64::NAN, Unit::Raw), "");
+    }
+
+    #[test]
+    fn format_number_wan_and_yi_always_two_decimals() {
+        // The whole point of the rule: users picking a scaled unit want
+        // tidy 2-decimal output, not 8-digit trailing noise.
+        assert_eq!(format_number(12345.6789, Unit::Wan), "12345.68");
+        assert_eq!(format_number(12345.6789, Unit::Yi), "12345.68");
+        // Even integer-valued doubles get `.00` under wan/yi for
+        // column alignment.
+        assert_eq!(format_number(7.0, Unit::Wan), "7.00");
+        assert_eq!(format_number(7.0, Unit::Yi), "7.00");
+        // NaN still empty.
+        assert_eq!(format_number(f64::NAN, Unit::Yi), "");
+    }
+
+    #[test]
+    fn tsv_under_unit_yi_renders_two_decimal_cells() {
+        // End-to-end through TSV: scaled values must come out 2-decimal.
+        // 1_234_567_890_000 raw → 12_345.6789 億 → "12345.68".
+        let rows = vec![row(
+            "600519",
+            Market::CnA,
+            "茅台",
+            "营业总收入",
+            1_234_567_890_000.0,
+            d(2024, 12, 31),
+            SourceTag::EastMoney,
+        )];
+        let scaled = apply_unit(rows, Unit::Yi);
+        let t = pivot(scaled, None, &empty_lookup());
+        let mut buf = Vec::<u8>::new();
+        render(&mut buf, &t, Format::Tsv).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        // Header is one line; the data row ends with the formatted value.
+        assert!(s.contains("\t12345.68\n"), "tsv output:\n{s}");
+    }
+
+    #[test]
+    fn table_under_unit_yi_renders_two_decimal_cells() {
+        let rows = vec![row(
+            "600519",
+            Market::CnA,
+            "茅台",
+            "营业总收入",
+            1_234_567_890_000.0,
+            d(2024, 12, 31),
+            SourceTag::EastMoney,
+        )];
+        let scaled = apply_unit(rows, Unit::Yi);
+        let t = pivot(scaled, None, &empty_lookup());
+        let mut buf = Vec::<u8>::new();
+        render(&mut buf, &t, Format::Table).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("12345.68"), "table output:\n{s}");
     }
 
     #[test]

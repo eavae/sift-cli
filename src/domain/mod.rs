@@ -13,12 +13,16 @@
 
 #![allow(dead_code)]
 
+pub mod announcement;
 pub mod financial_query;
 pub mod financial_row;
 pub mod items_dict;
 pub mod market;
 pub mod period;
 pub mod symbol;
+
+#[allow(unused_imports)]
+pub use announcement::{categories, lookup as lookup_announcement_type, AnnouncementRow, Category};
 
 #[allow(unused_imports)] // consumed by F1 stories and Story 02+; re-exported for ergonomics.
 pub use market::{em_secid_prefix, infer_board, Board, Market};

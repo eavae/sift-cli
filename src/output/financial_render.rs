@@ -252,43 +252,45 @@ fn render_tsv<W: Write>(out: &mut W, table: &PivotedTable) -> Result<(), SiftErr
         if i > 0 {
             writeln!(out).map_err(io_err)?;
         }
-        // Comment-style symbol metadata header so machine consumers
-        // can grep -v '^#' to recover the raw TSV body.
+        // Comment-style metadata header so machine consumers can
+        // `grep -v '^#'` to recover the raw TSV body. `_source` lives
+        // here (aggregated across periods via `+`) rather than as a
+        // body row — keeps the TSV a clean rectangle where every body
+        // row is one period's observation.
         writeln!(
             out,
-            "# _symbol={secucode} _name={name} _scope={scope} _currency={currency} _unit={unit}",
+            "# _symbol={secucode} _name={name} _scope={scope} _currency={currency} _unit={unit} _source={source}",
             secucode = format_secucode(&block.symbol),
             name = block.name,
             scope = block.scope,
             currency = block.currency,
             unit = block.unit.as_str(),
+            source = aggregate_sources(&block.sources),
         )
         .map_err(io_err)?;
 
-        // Header line (tab-separated): 财务指标 + period columns.
-        let mut hdr = String::from("财务指标");
-        for p in &block.periods {
+        // Transposed body: rows = periods (one row per observation),
+        // columns = financial items. Leftmost column is `_period`
+        // (ISO date) so downstream tools key on it without inspecting
+        // the schema.
+        let mut hdr = String::from("_period");
+        for (item, _) in &block.items {
+            check_tsv_cell(item)?;
             hdr.push('\t');
-            hdr.push_str(&format_date(*p));
+            hdr.push_str(item);
         }
         writeln!(out, "{hdr}").map_err(io_err)?;
 
-        // Item rows.
-        for (item, vals) in &block.items {
-            check_tsv_cell(item)?;
-            let mut line = item.clone();
-            for v in vals {
+        for (pi, period) in block.periods.iter().enumerate() {
+            let mut line = format_date(*period);
+            for (_, vals) in &block.items {
                 line.push('\t');
-                if let Some(n) = v {
+                if let Some(Some(n)) = vals.get(pi) {
                     line.push_str(&format_number(*n));
                 }
             }
             writeln!(out, "{line}").map_err(io_err)?;
         }
-        // Per-period `_source` row — kept in TSV so machine consumers
-        // see which source won each period. `_period_type` is omitted
-        // (redundant with the period-end date in the header).
-        writeln!(out, "_source\t{}", join_tsv_cells(&block.sources)?).map_err(io_err)?;
     }
     Ok(())
 }
@@ -387,13 +389,6 @@ fn check_tsv_cell(s: &str) -> Result<(), SiftError> {
         ));
     }
     Ok(())
-}
-
-fn join_tsv_cells(cells: &[String]) -> Result<String, SiftError> {
-    for c in cells {
-        check_tsv_cell(c)?;
-    }
-    Ok(cells.join("\t"))
 }
 
 fn format_secucode(sym: &Symbol) -> String {
@@ -646,31 +641,53 @@ mod tests {
     }
 
     #[test]
-    fn render_tsv_emits_comment_header_and_transposed_table() {
-        let rows = vec![row(
-            "600519",
-            Market::CnA,
-            "贵州茅台",
-            "营业总收入",
-            100.0,
-            d(2024, 12, 31),
-            SourceTag::Sina,
-        )];
+    fn render_tsv_columns_are_items_rows_are_periods() {
+        // Two periods × two items → 2 body rows × 3 columns
+        // (`_period`, 营业总收入, 归母净利润). `_source` lives on the
+        // comment header line, not as a body row, so the body is a
+        // clean rectangle keyed on `_period`.
+        let rows = vec![
+            row("600519", Market::CnA, "贵州茅台", "营业总收入", 100.0, d(2024, 12, 31), SourceTag::Sina),
+            row("600519", Market::CnA, "贵州茅台", "归母净利润", 50.0, d(2024, 12, 31), SourceTag::Sina),
+            row("600519", Market::CnA, "贵州茅台", "营业总收入", 80.0, d(2025, 12, 31), SourceTag::Sina),
+            row("600519", Market::CnA, "贵州茅台", "归母净利润", 40.0, d(2025, 12, 31), SourceTag::Sina),
+        ];
         let t = pivot(rows, None, &empty_lookup());
         let mut buf = Vec::<u8>::new();
         render(&mut buf, &t, Format::Tsv).unwrap();
         let s = String::from_utf8(buf).unwrap();
         let lines: Vec<&str> = s.lines().collect();
-        // Line 0: comment metadata.
+        // Line 0: comment metadata, now including aggregated `_source`.
         assert!(lines[0].starts_with("# _symbol="));
         assert!(lines[0].contains("_name=贵州茅台"));
-        // Line 1: header row.
-        assert_eq!(lines[1], "财务指标\t2024-12-31");
-        // Line 2: item row.
-        assert_eq!(lines[2], "营业总收入\t100");
-        // Last line: `_source` row only (no `_period_type`).
-        assert_eq!(lines[3], "_source\tsina");
+        assert!(lines[0].contains("_source=sina"));
+        // Line 1: header row — `_period` then item columns.
+        assert_eq!(lines[1], "_period\t营业总收入\t归母净利润");
+        // Lines 2/3: one row per period, newest first.
+        assert_eq!(lines[2], "2025-12-31\t80\t40");
+        assert_eq!(lines[3], "2024-12-31\t100\t50");
+        // `_source` body row is gone; `_period_type` still absent.
+        assert!(!s.contains("\n_source\t"));
         assert!(!s.contains("_period_type"));
+    }
+
+    #[test]
+    fn render_tsv_aggregates_source_in_header_when_mixed() {
+        // Different sources per period collapse to `eastmoney+sina`
+        // in the header — same convention as the table renderer.
+        let rows = vec![
+            row("600519", Market::CnA, "茅台", "营业总收入", 100.0, d(2024, 12, 31), SourceTag::EastMoney),
+            row("600519", Market::CnA, "茅台", "营业总收入", 80.0, d(2025, 12, 31), SourceTag::Sina),
+        ];
+        let t = pivot(rows, None, &empty_lookup());
+        let mut buf = Vec::<u8>::new();
+        render(&mut buf, &t, Format::Tsv).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.lines().next().unwrap().contains("_source=eastmoney+sina"),
+            "header line: {}",
+            s.lines().next().unwrap()
+        );
     }
 
     #[test]

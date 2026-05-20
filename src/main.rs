@@ -24,6 +24,7 @@ fn main() {
     let result: Result<(), SiftError> = match cli.command {
         Command::Search(args) => commands::search::run(args, fmt),
         Command::Financials { cmd } => run_financials(cmd, fmt),
+        Command::Announce { cmd } => commands::announce::run(cmd, fmt),
     };
 
     if let Err(e) = result {

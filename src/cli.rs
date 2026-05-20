@@ -38,6 +38,11 @@ pub enum Command {
         #[command(subcommand)]
         cmd: crate::commands::financials::FinancialsCmd,
     },
+    /// Announcements: list / show / download / types
+    Announce {
+        #[command(subcommand)]
+        cmd: crate::commands::announce::AnnounceCmd,
+    },
 }
 
 #[derive(clap::Args, Debug)]

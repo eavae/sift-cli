@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::domain::market::Market;
 use crate::error::SiftError;
 use crate::http::HttpClient;
 use crate::sources::cninfo::{self, CnInfoRow, StockLists};
@@ -68,7 +69,11 @@ pub fn load_cached_names() -> HashMap<String, String> {
     let Ok(root) = super::cache_root() else {
         return map;
     };
-    let cninfo_dir = root.join("cninfo");
+    load_cached_names_at(&root.join("cninfo"), &mut map);
+    map
+}
+
+fn load_cached_names_at(cninfo_dir: &Path, map: &mut HashMap<String, String>) {
     for fname in ["szse_stock.json", "hke_stock.json"] {
         let path = cninfo_dir.join(fname);
         let Ok(bytes) = std::fs::read(&path) else {
@@ -81,7 +86,42 @@ pub fn load_cached_names() -> HashMap<String, String> {
             map.insert(r.code, r.zwjc);
         }
     }
+}
+
+/// Read the on-disk cninfo cache and return a `code → (Market, org_id)`
+/// map without ever triggering a network fetch. Used by F3 to resolve
+/// `Symbol → ResolvedSymbol` for the announcements query. Same
+/// "missing means empty map" contract as [`load_cached_names`].
+pub fn load_cached_org_ids() -> HashMap<String, (Market, String)> {
+    let mut map = HashMap::new();
+    let Ok(root) = super::cache_root() else {
+        return map;
+    };
+    load_cached_org_ids_at(&root.join("cninfo"), &mut map);
     map
+}
+
+/// Test seam for [`load_cached_org_ids`]: read a specific directory
+/// instead of `$HOME/.sift/cache/cninfo`.
+pub(crate) fn load_cached_org_ids_at(
+    cninfo_dir: &Path,
+    map: &mut HashMap<String, (Market, String)>,
+) {
+    for (fname, market) in [
+        ("szse_stock.json", Market::CnA),
+        ("hke_stock.json", Market::Hk),
+    ] {
+        let path = cninfo_dir.join(fname);
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(rows) = cninfo::parse_envelope(&bytes, "org-id-lookup") else {
+            continue;
+        };
+        for r in rows {
+            map.insert(r.code, (market, r.org_id));
+        }
+    }
 }
 
 /// Production entry: caches under `~/.sift/cache/cninfo/`; warnings go

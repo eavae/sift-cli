@@ -37,6 +37,15 @@ pub enum SiftError {
     #[allow(dead_code)]
     #[error("no applicable source for {0}")]
     NoApplicableSource(String),
+    /// User-supplied symbol is not in the cninfo listings cache (and
+    /// a refresh did not find it either). Distinct from `Parse` (the
+    /// shape of the input was fine) and `NotFound` (search miss) —
+    /// this is "we know the cninfo universe and your code is not in
+    /// it". Exit code 1 — the data source is healthy, the input just
+    /// does not correspond to a known issuer.
+    #[allow(dead_code)]
+    #[error("symbol {0:?} not in cninfo listings; check the code or wait for the list refresh")]
+    MissingOrgId(String),
 }
 
 fn format_source_failures(failures: &[(String, String)]) -> String {
@@ -54,7 +63,8 @@ impl SiftError {
             SiftError::Internal(_)
             | SiftError::Parse(_)
             | SiftError::Io(_)
-            | SiftError::NoApplicableSource(_) => 1,
+            | SiftError::NoApplicableSource(_)
+            | SiftError::MissingOrgId(_) => 1,
             SiftError::Network(_) | SiftError::AllSourcesFailed(_) => 3,
             SiftError::NotFound(_) => 4,
         }
@@ -71,6 +81,7 @@ mod tests {
         assert_eq!(SiftError::Parse("x".into()).exit_code(), 1);
         assert_eq!(SiftError::Io("x".into()).exit_code(), 1);
         assert_eq!(SiftError::NoApplicableSource("x".into()).exit_code(), 1);
+        assert_eq!(SiftError::MissingOrgId("x".into()).exit_code(), 1);
         assert_eq!(SiftError::Network("x".into()).exit_code(), 3);
         assert_eq!(
             SiftError::AllSourcesFailed(vec![("a".into(), "x".into())]).exit_code(),

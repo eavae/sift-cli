@@ -58,6 +58,39 @@ impl HttpClient {
     /// not stack them. The header still counts against the retry
     /// budget.
     pub fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SiftError> {
+        // The closure returns `Result<Response, ureq::Error>`; clippy
+        // flags the `Err` size (~272 B, dominated by ureq's enum)
+        // but the box-it-up workaround would only relocate the cost.
+        // Allow locally since the loop runs ≤4 times.
+        #[allow(clippy::result_large_err)]
+        let r = || self.agent.get(url).call();
+        self.with_retries("GET", url, r)
+    }
+
+    /// POST `application/x-www-form-urlencoded`. Body is the
+    /// `&[(&str, &str)]` form pairs; encoding is handled by ureq.
+    /// Shares the retry / `Retry-After` / 16 MiB body cap behaviour
+    /// with [`HttpClient::get_bytes`].
+    pub fn post_form(&self, url: &str, form: &[(&str, &str)]) -> Result<Vec<u8>, SiftError> {
+        #[allow(clippy::result_large_err)]
+        let r = || self.agent.post(url).send_form(form);
+        self.with_retries("POST", url, r)
+    }
+
+    /// Shared retry / body-read loop for every HTTP verb. The
+    /// `request` closure encapsulates which verb (and which body
+    /// payload, for POST) to send on each attempt; everything else —
+    /// retry codes, backoff sequence, `Retry-After` parsing, body
+    /// cap — is handled once here.
+    fn with_retries<F>(
+        &self,
+        verb: &str,
+        url: &str,
+        mut request: F,
+    ) -> Result<Vec<u8>, SiftError>
+    where
+        F: FnMut() -> Result<ureq::Response, ureq::Error>,
+    {
         let mut last_err: Option<SiftError> = None;
         // One initial attempt plus `BACKOFF_SECS.len()` retries. The
         // final iteration has no corresponding sleep slot, so
@@ -65,11 +98,10 @@ impl HttpClient {
         // wait — this is the structural reason we tolerate an
         // `attempt` index that's one larger than the slice.
         for attempt in 0..=BACKOFF_SECS.len() {
-            match self.agent.get(url).call() {
+            match request() {
                 Ok(resp) => return read_body(resp),
                 Err(ureq::Error::Status(code, resp)) if RETRY_CODES.contains(&code) => {
-                    last_err =
-                        Some(SiftError::Network(format!("GET {url} -> {code}")));
+                    last_err = Some(SiftError::Network(format!("{verb} {url} -> {code}")));
                     if let Some(&base_wait) = BACKOFF_SECS.get(attempt) {
                         let wait = retry_after_secs(&resp).unwrap_or(base_wait);
                         if wait > 0 {
@@ -78,7 +110,7 @@ impl HttpClient {
                     }
                 }
                 Err(ureq::Error::Status(code, _)) => {
-                    return Err(SiftError::Network(format!("GET {url} -> {code}")));
+                    return Err(SiftError::Network(format!("{verb} {url} -> {code}")));
                 }
                 Err(e) => return Err(SiftError::Network(e.to_string())),
             }
@@ -229,5 +261,65 @@ mod tests {
         assert_eq!(body, b"done");
         m1.assert();
         m2.assert();
+    }
+
+    #[test]
+    fn post_form_returns_body_and_sends_form_fields() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/echo")
+            .match_body(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("a".into(), "1".into()),
+                mockito::Matcher::UrlEncoded("b".into(), "2".into()),
+            ]))
+            .with_status(200)
+            .with_body("ok")
+            .expect(1)
+            .create();
+        let client = HttpClient::new();
+        let body = client
+            .post_form(&format!("{}/echo", server.url()), &[("a", "1"), ("b", "2")])
+            .unwrap();
+        assert_eq!(body, b"ok");
+        m.assert();
+    }
+
+    #[test]
+    fn post_form_retries_on_502_then_succeeds() {
+        let mut server = mockito::Server::new();
+        let m_fail = server
+            .mock("POST", "/r")
+            .with_status(502)
+            .expect(2)
+            .create();
+        let m_ok = server
+            .mock("POST", "/r")
+            .with_status(200)
+            .with_body("ok")
+            .expect(1)
+            .create();
+        let client = HttpClient::new();
+        let body = client
+            .post_form(&format!("{}/r", server.url()), &[("x", "1")])
+            .unwrap();
+        assert_eq!(body, b"ok");
+        m_fail.assert();
+        m_ok.assert();
+    }
+
+    #[test]
+    fn post_form_does_not_retry_on_404() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/none")
+            .with_status(404)
+            .expect(1)
+            .create();
+        let client = HttpClient::new();
+        let err = client
+            .post_form(&format!("{}/none", server.url()), &[])
+            .unwrap_err();
+        assert!(matches!(err, SiftError::Network(_)));
+        m.assert();
     }
 }

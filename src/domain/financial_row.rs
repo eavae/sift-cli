@@ -160,7 +160,7 @@ impl SourceTag {
         }
     }
 
-    /// Inverse of [`as_str`]. Unknown names return `None` — callers
+    /// Inverse of [`SourceTag::as_str`]. Unknown names return `None` — callers
     /// that need a default (e.g. legacy cache rows written before a
     /// new source was added) fall back to `SourceTag::EastMoney`.
     pub fn from_name(name: &str) -> Option<SourceTag> {

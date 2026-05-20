@@ -9,7 +9,9 @@
 //!   `YYYY-MM-DD HH:MM:SS` UTC string for stale-cache warnings,
 //!   without pulling a date crate.
 
+pub mod financials;
 pub mod search;
+pub mod ttl;
 
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;

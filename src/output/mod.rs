@@ -1,3 +1,4 @@
+pub mod financial_render;
 pub mod render;
 
 pub use render::{render, RenderRow};

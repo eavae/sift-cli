@@ -8,13 +8,17 @@
 /// Declaration order is significant: `CnA` is declared first, so the
 /// derived `Ord` impl gives "CN-A before HK", matching the README sort
 /// convention used by every command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Market {
     /// CN A-share (sh + sz + bj + B-share + CDR), keyed on the `cninfo`
     /// `szse_stock.json` endpoint despite its misleading name.
     CnA,
     /// Hong Kong main board / GEM, served by `hke_stock.json`.
     Hk,
+    /// US-listed equities. Reached only by the F2 eastmoney financial
+    /// source; F1 search does not enumerate US tickers (cninfo does
+    /// not cover them).
+    Us,
 }
 
 impl Market {
@@ -23,6 +27,7 @@ impl Market {
         match self {
             Market::CnA => "cn-a",
             Market::Hk => "hk",
+            Market::Us => "us",
         }
     }
 
@@ -31,6 +36,7 @@ impl Market {
         match self {
             Market::CnA => "CN-A",
             Market::Hk => "HK",
+            Market::Us => "US",
         }
     }
 }
@@ -90,6 +96,9 @@ pub fn em_secid_prefix(market: Market, board: Option<Board>) -> &'static str {
         (Market::CnA, Some(Board::ShMain | Board::ShStar | Board::BShare)) => "1.",
         (Market::CnA, _) => "0.",
         (Market::Hk, _) => "116.",
+        // EM uses 105/106/107 for US (NASDAQ/NYSE/AMEX). F5 quote will
+        // refine this; for F2 financials the secid is not consulted.
+        (Market::Us, _) => "106.",
     }
 }
 
@@ -103,14 +112,17 @@ mod tests {
         assert_eq!(Market::CnA.as_upper(), "CN-A");
         assert_eq!(Market::Hk.as_lower(), "hk");
         assert_eq!(Market::Hk.as_upper(), "HK");
+        assert_eq!(Market::Us.as_lower(), "us");
+        assert_eq!(Market::Us.as_upper(), "US");
     }
 
     #[test]
-    fn market_orders_cn_a_before_hk() {
+    fn market_orders_cn_a_before_hk_before_us() {
         assert!(Market::CnA < Market::Hk);
-        let mut v = vec![Market::Hk, Market::CnA];
+        assert!(Market::Hk < Market::Us);
+        let mut v = vec![Market::Us, Market::Hk, Market::CnA];
         v.sort();
-        assert_eq!(v, vec![Market::CnA, Market::Hk]);
+        assert_eq!(v, vec![Market::CnA, Market::Hk, Market::Us]);
     }
 
     #[test]
@@ -174,5 +186,6 @@ mod tests {
         assert_eq!(em_secid_prefix(Market::CnA, None), "0.");
         assert_eq!(em_secid_prefix(Market::Hk, None), "116.");
         assert_eq!(em_secid_prefix(Market::Hk, Some(Board::ShMain)), "116.");
+        assert_eq!(em_secid_prefix(Market::Us, None), "106.");
     }
 }

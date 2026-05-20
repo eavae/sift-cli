@@ -1,0 +1,476 @@
+# 财报科目字典 — 上游原文 → 标准中文名（双向：中→英 / 英→中均靠 alias 表）
+#
+# 格式：标准中文名 | alias1 | alias2 | ...
+# - 每行一个条目；以 `|` 分隔字段，前后空白自动 trim
+# - 标准中文名（第一列）会自动加入 alias 集合，不必重复列出
+# - 推荐的 alias 顺序：中文同义词在前，英文列名（EM wide 表）在后
+# - 以 `#` 开头的行为注释；空行忽略
+# - alias 必须全局唯一；重复会在加载时报错（src/domain/items_dict.rs）
+# - 新增一行无任何语法负担：标准名 | 同义词 | EN_CODE 即可
+
+# === 利润表（核心）===
+营业总收入 | TOTAL_OPERATE_INCOME | TOTALOPERATEREVE
+营业收入 | OPERATE_INCOME
+营业成本 | 减:营业成本 | OPERATE_COST
+营业总成本 | TOTAL_OPERATE_COST
+营业利润 | OPERATE_PROFIT
+利润总额 | TOTAL_PROFIT
+净利润 | NETPROFIT
+归母净利润 | 归属于母公司股东的净利润 | 归属于母公司所有者的净利润 | 归属于母公司的净利润 | PARENT_NETPROFIT | PARENTNETPROFIT
+基本每股收益 | BASIC_EPS | EPSJB
+稀释每股收益 | DILUTED_EPS | EPSXS
+利息收入 | INTEREST_INCOME
+手续费及佣金收入 | FEE_COMMISSION_INCOME
+投资收益 | INVEST_INCOME
+已赚保费 | EARNED_PREMIUM
+代理买卖证券业务收入 | AGENT_TRADE_INCOME
+
+# === 资产负债表（核心）===
+货币资金 | MONETARY_FUND | MONETARYFUNDS
+存货 | INVENTORY
+应收账款 | ACCOUNTS_RECE
+流动资产合计 | TOTAL_CURRENT_ASSETS | CURRENT_ASSET_BALANCE
+非流动资产合计 | TOTAL_NONCURRENT_ASSETS | NONCURRENT_ASSET_BALANCE
+资产总计 | TOTAL_ASSETS | ASSET_BALANCE
+流动负债合计 | TOTAL_CURRENT_LIAB | CURRENT_LIAB_BALANCE
+非流动负债合计 | TOTAL_NONCURRENT_LIAB | NONCURRENT_LIAB_BALANCE
+负债合计 | TOTAL_LIABILITIES | LIABILITY | LIAB_BALANCE
+归属母公司股东权益合计 | 归属于母公司股东权益合计 | 归属于母公司的股东权益合计 | 归属于母公司股东的权益 | TOTAL_PARENT_EQUITY | PARENT_EQUITY_BALANCE
+股东权益合计 | 所有者权益合计 | 所有者权益(或股东权益)合计 | 股东权益 | TOTAL_EQUITY | EQUITY_BALANCE
+
+# === 现金流量表（核心）===
+经营活动现金流量净额 | 经营活动产生的现金流量净额 | NETCASH_OPERATE | OPERATE_NETCASH_BALANCE
+投资活动现金流量净额 | 投资活动产生的现金流量净额 | NETCASH_INVEST | INVEST_NETCASH_BALANCE
+筹资活动现金流量净额 | 筹资活动产生的现金流量净额 | NETCASH_FINANCE | FINANCE_NETCASH_BALANCE
+现金及现金等价物净增加额 | 现金及现金等价物净增加(减少)额 | CCE_ADD | CCE_ADD_BALANCE
+期末现金及现金等价物余额 | 期末现金及现金等价物 | END_CCE | END_CCE_BALANCE
+
+# === 财务指标 ===
+ROE | 净资产收益率 | ROE_AVG
+ROA | 总资产收益率 | ROA_AVG
+毛利率 | GROSS_PROFIT_RATIO | XSMLL | MLR
+净利率 | NET_PROFIT_RATIO | XSJLL
+资产负债率 | DEBT_ASSET_RATIO | ZCFZL
+流动比率 | CURRENT_RATIO | LD
+速动比率 | QUICK_RATIO | SD
+每股净资产 | BPS
+每股经营现金流 | OCF_PER_SHARE | MGJYXJJE
+
+# === 利润表 — 费用与其他 ===
+销售费用 | 减:销售费用 | SELL_EXPENSE | SALE_EXPENSE
+管理费用 | 减:管理费用 | MANAGE_EXPENSE
+财务费用 | 减:财务费用 | FINANCE_EXPENSE
+研发费用 | 减:研发费用 | RESEARCH_EXPENSE
+开发支出 | DEVELOP_EXPENSE
+营业税金及附加 | 减:营业税金及附加 | OPERATE_TAX_ADD
+资产减值损失 | 减:资产减值损失 | ASSET_IMPAIRMENT_LOSS | ASSET_IMPAIRMENT_INCOME
+信用减值损失 | 减:信用减值损失 | CREDIT_IMPAIRMENT_LOSS | CREDIT_IMPAIRMENT_INCOME
+营业外收入 | 加:营业外收入 | NONBUSINESS_INCOME
+营业外支出 | 减:营业外支出 | NONBUSINESS_EXPENDITURE | NONBUSINESS_EXPENSE
+公允价值变动收益 | 加:公允价值变动收益 | 公允价值变动收益/(损失) | FAIRVALUE_CHANGE_INCOME
+
+# === 资产负债表 — 常用项目 ===
+短期借款 | SHORT_LOAN
+长期借款 | LONG_LOAN
+应付账款 | ACCOUNTS_PAYABLE
+应付票据 | NOTE_PAYABLE
+应付职工薪酬 | STAFF_SALARY_PAYABLE
+固定资产 | 固定资产合计 | 固定资产净额 | 固定资产及清理合计 | FIXED_ASSET
+在建工程 | 在建工程合计 | CONSTRUCTION_IN_PROGRESS | CIP
+无形资产 | INTANGIBLE_ASSET
+商誉 | GOODWILL
+实收资本 | 实收资本(或股本) | 实收资本（或股本） | 股本 | 实收资本净额 | PAID_IN_CAPITAL | SHARE_CAPITAL
+资本公积 | CAPITAL_RESERVE
+未分配利润 | UNASSIGN_PROFIT | UNASSIGN_RPOFIT
+
+# === 现金流量表 — 经营活动明细 ===
+销售商品、提供劳务收到的现金 | SALES_SERVICES_CASH | SALES_SERVICES
+购买商品、接受劳务支付的现金 | BUY_SERVICES_CASH | BUY_SERVICES
+支付给职工以及为职工支付的现金 | STAFF_CASH | PAY_STAFF_CASH
+
+# === 利润表 — 扩展 / 综合收益 ===
+利息支出 | 利息费用 | INTEREST_EXPENSE
+手续费及佣金支出 | FEE_COMMISSION_EXPENSE
+其他业务收入 | OTHER_BUSINESS_INCOME
+其他业务成本 | OTHER_BUSINESS_COST
+退保金 | SURRENDER_VALUE
+赔付支出净额 | NET_COMPENSATE_EXPENSE
+提取保险责任准备金净额 | NET_CONTRACT_RESERVE
+保单红利支出 | POLICY_BONUS_EXPENSE
+分保费用 | REINSURE_EXPENSE
+汇兑收益 | 汇兑净收益 | EXCHANGE_INCOME
+资产处置收益 | ASSET_DISPOSAL_INCOME
+其他收益 | OTHER_INCOME
+对联营企业和合营企业的投资收益 | INVEST_JOINT_INCOME
+对联营企业和合营企业的投资损失
+净敞口套期收益 | NET_EXPOSURE_INCOME
+非流动资产处置利得 | NONCURRENT_DISPOSAL_INCOME
+非流动资产处置损失 | NONCURRENT_DISPOSAL_LOSS
+所得税费用 | 减:所得税 | 减:所得税费用 | INCOME_TAX
+持续经营净利润 | CONTINUED_NETPROFIT
+终止经营净利润 | DISCONTINUED_NETPROFIT
+少数股东损益 | MINORITY_INTEREST
+扣除非经常性损益后的净利润 | KCFJCXSYJLR | DEDUCT_PARENT_NETPROFIT
+其他综合收益 | OTHER_COMPRE_INCOME
+归属于母公司股东的其他综合收益 | 归属于母公司所有者的其他综合收益 | PARENT_OCI
+少数股东其他综合收益 | 归属于少数股东的其他综合收益 | MINORITY_OCI
+综合收益总额 | TOTAL_COMPRE_INCOME
+归属于母公司股东的综合收益总额 | 归属于母公司所有者的综合收益总额 | PARENT_TCI
+少数股东综合收益总额 | 归属于少数股东的综合收益总额 | MINORITY_TCI
+未确认投资损失 | UNCONFIRM_INVEST_LOSS
+不能重分类进损益的其他综合收益 | （一）以后不能重分类进损益的其他综合收益 | UNABLE_OCI
+以后将重分类进损益的其他综合收益 | （二）以后将重分类进损益的其他综合收益 | ABLE_OCI
+外币财务报表折算差额 | CONVERT_DIFF
+现金流量套期工具有效部分 | CASHFLOW_HEDGE_VALID
+现金流量套期储备
+其他债权投资公允价值变动
+其他债权投资信用减值准备
+
+# === 资产负债表 — 扩展项目 ===
+应收票据 | NOTE_RECE
+应收票据及应收账款 | NOTE_ACCOUNTS_RECE
+预付款项 | PREPAYMENT
+其他应收款 | 其他应收款(合计) | OTHER_RECE
+应收款项合计 | TOTAL_OTHER_RECE
+应收款项 | RECEIVABLES
+应收款项融资 | FINANCE_RECE
+其他流动资产 | OTHER_CURRENT_ASSET
+交易性金融资产 | TRADE_FINASSET | FVTPL_FINASSET | TRADE_FINASSET_NOTFVTPL
+衍生金融资产 | 衍生金融工具资产 | DERIVE_FINASSET
+可供出售金融资产 | AVAILABLE_SALE_FINASSET
+债权投资 | CREDITOR_INVEST
+其他债权投资 | OTHER_CREDITOR_INVEST
+其他权益工具投资 | OTHER_EQUITY_INVEST
+其他非流动金融资产 | OTHER_NONCURRENT_FINASSET
+一年内到期的非流动资产 | NONCURRENT_ASSET_1YEAR
+长期应收款 | LONG_RECE
+持有至到期投资 | HOLD_MATURITY_INVEST
+长期股权投资 | LONG_EQUITY_INVEST
+投资性房地产 | INVEST_REALESTATE
+油气资产 | OIL_GAS_ASSET
+生产性生物资产 | PRODUCTIVE_BIOLOGY_ASSET
+长期待摊费用 | LONG_PREPAID_EXPENSE
+递延所得税资产 | DEFER_TAX_ASSET
+递延所得税负债 | DEFER_TAX_LIAB
+其他非流动资产 | OTHER_NONCURRENT_ASSET
+使用权资产 | USERIGHT_ASSET
+合同资产 | CONTRACT_ASSET
+应付债券 | 应付债券款 | BOND_PAYABLE
+应付利息 | INTEREST_PAYABLE
+应付股利 | DIVIDEND_PAYABLE
+应收利息 | INTEREST_RECE
+预计流动负债 | CURRENT_PREDICT_LIAB
+预计非流动负债 | NONCURRENT_PREDICT_LIAB
+专项储备 | SPECIAL_RESERVE
+应交税费 | 应交税金 | TAX_PAYABLE
+预收账款 | ADVANCE_RECEIVABLES
+其他应付款 | OTHER_PAYABLE
+其他应付款合计 | TOTAL_OTHER_PAYABLE
+应付票据及应付账款 | NOTE_ACCOUNTS_PAYABLE
+应付短期融资款 | SHORT_FIN_PAYABLE
+一年内到期的非流动负债 | NONCURRENT_LIAB_1YEAR
+其他流动负债 | OTHER_CURRENT_LIAB | CURRENT_LIAB_OTHER
+长期应付款 | LONG_PAYABLE
+预计负债 | PREDICT_LIAB
+递延收益 | DEFER_INCOME
+长期递延收益 | LONG_DEFER_INCOME
+其他非流动负债 | OTHER_NONCURRENT_LIAB
+合同负债 | CONTRACT_LIAB
+租赁负债 | LEASE_LIAB
+交易性金融负债 | TRADE_FINLIAB_NOTFVTPL | FVTPL_FINLIAB
+衍生金融负债 | 衍生金融工具负债 | DERIVE_FINLIAB
+其他权益工具 | OTHER_EQUITY_TOOL
+永续债 | 其中：永续债 | PERPETUAL_BOND
+盈余公积 | SURPLUS_RESERVE
+库存股 | 减:库存股 | TREASURY_SHARES
+一般风险准备 | GENERAL_RISK_RESERVE
+少数股东权益 | MINORITY_EQUITY
+负债和所有者权益总计 | 负债及股东权益总计 | 负债和所有者权益(或股东权益)总计 | TOTAL_LIAB_EQUITY
+
+# === 现金流量表 — 扩展明细 ===
+收到的税费返还 | RECEIVE_TAX_REFUND
+收到其他与经营活动有关的现金 | 收到的其他与经营活动有关的现金 | RECEIVE_OTHER_OPERATE | OPERATE_INFLOW_OTHER
+经营活动现金流入小计 | TOTAL_OPERATE_INFLOW | OPERATE_INFLOW_BALANCE
+支付的各项税费 | PAY_ALL_TAX
+支付其他与经营活动有关的现金 | 支付的其他与经营活动有关的现金 | PAY_OTHER_OPERATE | OPERATE_OUTFLOW_OTHER
+经营活动现金流出小计 | TOTAL_OPERATE_OUTFLOW | OPERATE_OUTFLOW_BALANCE
+收回投资收到的现金 | 收回投资所收到的现金 | WITHDRAW_INVEST
+取得投资收益收到的现金 | RECEIVE_INVEST_INCOME
+处置子公司及其他营业单位收到的现金净额 | DISPOSAL_SUBSIDIARY_CASH | DISPOSAL_SUBSIDIARY_OTHER
+取得子公司及其他营业单位支付的现金净额 | OBTAIN_SUBSIDIARY_CASH | OBTAIN_SUBSIDIARY_OTHER
+处置长期资产收回的现金 | 处置固定资产、无形资产及其他资产而收到的现金 | 处置固定资产、无形资产及其他长期资产收回的现金净额 | 处置固定资产、无形资产和其他长期资产所收回的现金净额 | 处置固定资产、无形资产和其他长期资产收回的现金净额 | DISPOSAL_LONG_ASSET
+收到其他与投资活动有关的现金 | 收到的其他与投资活动有关的现金 | RECEIVE_OTHER_INVEST
+投资活动现金流入小计 | TOTAL_INVEST_INFLOW | INVEST_INFLOW_BALANCE
+购建长期资产支付的现金 | 购建固定资产、无形资产和其他长期资产支付的现金 | 购建固定资产、无形资产和其他长期资产所支付的现金 | CONSTRUCT_LONG_ASSET
+投资支付的现金 | 投资所支付的现金 | INVEST_PAY_CASH
+支付其他与投资活动有关的现金 | 支付的其他与投资活动有关的现金 | PAY_OTHER_INVEST
+投资活动现金流出小计 | TOTAL_INVEST_OUTFLOW | INVEST_OUTFLOW_BALANCE
+吸收投资收到的现金 | ACCEPT_INVEST_CASH
+取得借款收到的现金 | RECEIVE_LOAN_CASH
+发行债券收到的现金 | ISSUE_BOND
+收到其他与筹资活动有关的现金 | 收到的其他与筹资活动有关的现金 | RECEIVE_OTHER_FINANCE | FINANCE_INFLOW_OTHER
+筹资活动现金流入小计 | TOTAL_FINANCE_INFLOW | FINANCE_INFLOW_BALANCE
+偿还债务支付的现金 | 偿还债务所支付的现金 | PAY_DEBT_CASH
+分配股利利润或偿付利息支付的现金 | 分配股利、利润或偿付利息支付的现金 | 分配股利、利润或偿付利息所支付的现金 | 偿付利息所支付的现金 | ASSIGN_DIVIDEND_PORFIT
+支付其他与筹资活动有关的现金 | 支付的其他与筹资活动有关的现金 | PAY_OTHER_FINANCE | FINANCE_OUTFLOW_OTHER
+偿付债券利息支付的现金 | PAY_BOND_INTEREST
+子公司支付给少数股东的股利 | 子公司支付给少数股东的股利、利润 | SUBSIDIARY_PAY_DIVIDEND
+子公司吸收少数股东投资 | 子公司吸收少数股东投资收到的现金 | SUBSIDIARY_ACCEPT_INVEST
+筹资活动现金流出小计 | TOTAL_FINANCE_OUTFLOW | FINANCE_OUTFLOW_BALANCE
+汇率变动对现金的影响 | 汇率变动对现金及现金等价物的影响 | RATE_CHANGE_EFFECT
+期初现金及现金等价物余额 | BEGIN_CCE
+期初现金 | 现金的期初余额 | BEGIN_CASH
+期末现金 | 现金的期末余额 | END_CASH
+固定资产折旧 | FA_IR_DEPR
+无形资产摊销 | IA_AMORTIZE
+长期待摊费用摊销 | LPE_AMORTIZE
+资产减值准备 | ASSET_IMPAIRMENT
+递延所得税资产减少 | DT_ASSET_REDUCE
+递延所得税负债增加 | DT_LIAB_ADD
+存货的减少 | INVENTORY_REDUCE
+经营性应收项目的减少 | OPERATE_RECE_REDUCE
+经营性应付项目的增加 | OPERATE_PAYABLE_ADD
+
+# === 银行业务（利润表 / 资产负债表 / 现金流量表）===
+利息净收入 | 银行业务利息净收入 | 净利息收入
+银行业务利息收入 | IOFI_DEPOSIT
+银行业务利息支出 | DEPOSIT_IOFI_OTHER
+手续费及佣金净收入 | 手续费净收入
+净交易收入
+业务及管理费 | 业务及管理费用
+吸收存款 | 客户存款(吸收存款) | CUSTOMER_DEPOSIT | ACCEPT_DEPOSIT | TOTALDEPOSITS
+吸收存款及同业存放 | ACCEPT_DEPOSIT_INTERBANK
+同业存放款项 | 其中:同业存放款项 | DEPOSIT_INTERBANK
+拆入资金 | BORROW_FUND
+拆出资金 | LEND_FUND | 融出资金
+向中央银行借款 | LOAN_PBC
+现金及存放中央银行款项 | CASH_DEPOSIT_PBC
+存放同业款项
+客户备付金 | 结算备付金 | SETTLE_EXCESS_RESERVE | CUSTOMER_EXCESS_RESERVE
+客户资金存款
+卖出回购金融资产款 | SELL_REPO_FINASSET
+买入返售金融资产 | BUY_RESALE_FINASSET
+发放贷款及垫款 | 发放贷款及垫款净额 | LOAN_ADVANCE | LOAN_ADVANCES
+贷款损失准备 | 减:贷款损失准备
+贵金属 | PRECIOUS_METAL
+定期存款 | TIME_DEPOSIT
+应收保证金
+存出资本保证金 | REFUND_CAPITAL_DEPOSIT
+客户存款和同业存放款项净增加额 | 客户存款和同业存入款项净增加 | 客户存款和同业存入款项净增加额 | DEPOSIT_INTERBANK_ADD
+客户贷款及垫款净增加额 | LOAN_ADVANCE_ADD
+存放中央银行和同业款项净增加额 | PBC_INTERBANK_ADD | PBC_INTERBANK_REDUCE
+拆入资金净增加额 | BORROW_FUND_ADD
+拆出资金净增加额 | LEND_FUND_ADD | 融出资金净增加额
+卖出回购金融资产净增加额 | SELL_REPO_ADD | 吸收的卖出回购项净额
+卖出回购金融资产收到的现金
+买入返售业务资金净减少额 | BUY_RESALE_REDUCE | 收回的买入返售项净额
+偿还中央银行借款 | LOAN_PBC_REDUCE
+回购金融资产支付的现金 | PAY_SELL_REPO
+同业存入及拆入
+拆入资金现金流入
+拆出资金净现金流出
+银行业拆借资金净增加额 | BANKSECURITY_LEND_ADD
+银行业回购金融资产净增加额 | BANKSECURITY_REPO_ADD
+银行业返售金融资产净减少额 | BANKSECURITY_RESALE_REDUCE
+拆出资金返售净增加额 | LEND_RESALE_ADD
+拆出资金返售净减少额 | LEND_RESALE_REDUCE
+回购业务净增加额 | REPO_BUSINESS_ADD
+存放中央银行款项利息减少 | PBC_IOFI_REDUCE
+收到再保险业务现金净额 | RECEIVE_REINSURE_NET
+退还客户存款保证金 | REFUND_DEPOSIT_PAY
+向中央银行借款净增加额 | BORROW_REPO_ADD
+收取利息、手续费及佣金的现金 | RECEIVE_INTEREST_COMMISSION
+支付利息、手续费及佣金的现金 | PAY_INTEREST_COMMISSION
+
+# === 保险业务 ===
+营业支出
+预收保费 | ADVANCE_PREMIUM
+收到原保险合同保费取得的现金
+支付原保险合同赔付款项的现金
+支付再保业务产生的现金流出
+再保险业务产生的现金流入
+赔付支出 | 减:摊回赔付支出
+以摊余成本计量的金融资产终止确认产生的收益
+其中:保险业务收入
+
+# === 证券业务 ===
+代理买卖证券业务净收入 | AGENT_TRADE_SECURITY
+证券承销业务净收入 | AGENT_UNDERWRITE_SECURITY
+委托管理资产业务净收入
+代买卖证券款
+代理承销证券款
+代理买卖业务的现金净增加额 | RECEIVE_AGENT_TRADE
+为交易目的而持有的金融资产净增加额 | TRADE_FINASSET_ADD
+自营资本 | PROPRIETARY_CAPITAL
+
+# === 其他资产 / 其他负债（多源通用项）===
+其他资产 | OTHER_ASSET | ASSET_OTHER
+其他负债 | OTHER_LIAB | LIAB_OTHER
+其他资产减值损失
+其他长期资产
+递延税款借项
+递延税款贷项
+
+# === 财务指标 — 扩展（EM 主要财务指标拼音码）===
+ROE加权 | ROEJQ
+ROE扣非加权 | ROEKCJQ
+ROIC | ROIC
+总资产净利率 | ZZCJLL
+总资产周转率 | TOAZZL
+总资产周转天数 | ZZCZZTS
+应收账款周转率 | YSZKZZL
+应收账款周转天数 | YSZKZZTS
+存货周转率 | CHZZL
+存货周转天数 | CHZZTS
+应付账款周转天数 | PAYABLE_TDAYS
+预付账款周转率 | PREPAID_ACCOUNTS_RATIO
+预付账款周转天数 | PREPAID_ACCOUNTS_TDAYS
+产权比率 | CQBL
+利息保障倍数 | INTSTCOVRATE
+营业周期 | OPERATE_CYCLE
+扣非基本每股收益 | EPSKCJB
+每股资本公积金 | MGZBGJ
+每股未分配利润 | MGWFPLR
+现金比率 | CASH_RATIO
+清算价值比率 | LIQUIDATION_RATIO
+有息债务/总投入资本 | INTEREST_DEBT_RATIO
+税率 | TAXRATE
+总投入资本回报率 | TOTAL_ROI
+净投入资本回报率 | NET_ROI
+权益乘数 | QYCS
+保守速动比率 | GUARD_SPEED_RATIO
+收入比率 | REVENUE_RATIO
+应付账款周转率 | ACCOUNTS_PAYABLE_TR
+流动资产周转率 | CURRENT_ASSET_TR
+固定资产周转率 | FIXED_ASSET_TR
+存货周转率同比 | INVENTORY_TR_YOY
+现金流量比率 | XJLLB
+经营现金流/营业收入 | JYXJLYYSR
+销售经现率 | XSJXLYYSR
+营业总收入滚动同比增长 | YYZSRGDHBZC
+归母净利润滚动同比增长 | NETPROFITRPHBZC
+扣非净利润滚动环比增长 | KFJLRGDHBZC
+主要股东权益增长率 | ZYGDSYLZQJZB
+A股流通股 | A_FREE_SHARE
+B股流通股 | B_FREE_SHARE
+总股本 | TOTAL_SHARE
+报告类型 | IS_BZ
+报告年份 | REPORT_YEAR
+
+# === 财务指标 — 同比 / 环比 / 行业对比（EM 衍生）===
+营业总收入同比 | TOTALOPERATEREVETZ
+归母净利润同比 | PARENTNETPROFITTZ
+扣非净利润同比 | KCFJCXSYJLRTZ
+基本每股收益同比 | EPSJBTZ
+每股净资产同比 | BPSTZ
+每股资本公积同比 | MGZBGJTZ
+每股未分配利润同比 | MGWFPLRTZ
+每股经营现金流同比 | MGJYXJJETZ
+ROE加权同比 | ROEJQTZ
+ROIC同比 | ROICTZ
+总资产净利率同比 | ZZCJLLTZ
+资产负债率同比 | ZCFZLTZ
+销售毛利率同比 | XSMLL_TB
+营业总收入行业对比 | OPERATE_INCOME_PK
+营业利润行业对比 | OPERATE_PROFIT_PK
+总资产行业对比 | TOTAL_ASSETS_PK
+股东权益行业对比 | TOTAL_EQUITY_PK
+经营现金流行业对比 | NETCASH_OPERATE_PK
+投资现金流行业对比 | NETCASH_INVEST_PK
+筹资现金流行业对比 | NETCASH_FINANCE_PK
+营收YoY行业对比 | OI_YOYRATIO_PK
+股东权益YoY行业对比 | EQUITY_YOYRATIO_PK
+总资产YoY行业对比 | TA_YOYRATIO_PK
+留存收益比率行业对比 | RE_RATIO_PK
+销售盈利对比 | SALE_ER_PK
+流动资产/总资产 | CA_TA
+非流动资产/总资产 | NCA_TA
+流动负债/总负债 | CL_TL
+股东权益/总资产 | SS_TA
+股东权益增长 | SS_OI
+单季度营业总收入同比 | DJD_TOI_YOY
+单季度营业总收入环比 | DJD_TOI_QOQ
+单季度归母净利润同比 | DJD_DPNP_YOY
+单季度归母净利润环比 | DJD_DPNP_QOQ
+单季度扣非净利润同比 | DJD_DEDUCTDPNP_YOY
+单季度扣非净利润环比 | DJD_DEDUCTDPNP_QOQ
+自由现金流(前瞻) | FCFF_FORWARD
+自由现金流(回看) | FCFF_BACK
+每股EBIT | PER_EBIT
+每股营业收入 | PER_OI
+每股营业总收入 | PER_TOI
+净现金流/营业收入 | NCO_OP
+净现金流/固定资产 | NCO_FIXED
+净现金流/净利润 | NCO_NETPROFIT
+外币负债 | FC_LIABILITIES
+金融资金 | FIN_FUND
+净资本 | JZB
+净资产 | JZC
+净资本/净资产 | JZBJZC
+年增金额 | NZBJE
+
+# === 财务指标 — 银行专属 ===
+不良贷款率 | NON_PERFORMING_LOAN | NONPERLOAN
+不良贷款余额 | GROSSLOANS
+拨备覆盖率 | BLDKBBL
+贷款拨备率 | LOAN_PROVISION_RATIO
+资本充足率 | NEWCAPITALADER
+一级资本充足率 | FIRST_ADEQUACY_RATIO
+核心一级资本充足率 | HXYJBCZL
+流动性覆盖率 | LIQUIDITY_COVERAGE_RATIO
+净息差 | NET_INTEREST_MARGIN
+净利差 | NET_INTEREST_SPREAD
+存款总额 | TOTALDEPOSITS_TOTAL
+长期债务比率 | LTDRR
+
+# === 财务指标 — 证券 / 保险专属 ===
+资本杠杆率 | CAPITAL_LEVERAGE_RATIO
+风险覆盖率 | RISK_COVERAGE
+净资本/负债 | NET_CAPITAL_LIABILITIES
+净资产/负债 | NET_ASSETS_LIABILITIES
+净稳定资金率 | NET_FUNDING_RATIO
+新业务价值（寿险）| NBV_LIFE
+新业务价值率 | NBV_RATE
+各项资本准备金合计 | CAPITAL_PROVISIONS_SUM
+
+# === 其他 / 平衡项 / 特殊综合收益 / 元数据 ===
+利息收入(财务费用项) | FE_INTEREST_INCOME
+利息费用(财务费用项) | FE_INTEREST_EXPENSE
+管理费用项研发费用 | ME_RESEARCH_EXPENSE
+营业总收入其他 | TOI_OTHER
+营业总成本其他 | TOC_OTHER
+营业利润其他 | OPERATE_PROFIT_OTHER
+营业利润平衡项 | OPERATE_PROFIT_BALANCE
+利润总额平衡项 | TOTAL_PROFIT_BALANCE
+影响利润总额其他 | EFFECT_TP_OTHER
+影响净利润其他 | EFFECT_NETPROFIT_OTHER
+影响净利润平衡项 | EFFECT_NETPROFIT_BALANCE
+净利润其他 | NETPROFIT_OTHER
+净利润平衡项 | NETPROFIT_BALANCE
+被合并方在合并前实现净利润 | PRECOMBINE_PROFIT
+归属母公司其他综合收益其他 | PARENT_OCI_OTHER
+归属母公司其他综合收益平衡项 | PARENT_OCI_BALANCE
+不能重分类OCI其他 | UNABLE_OCI_OTHER
+不能重分类OCI平衡项 | UNABLE_OCI_BALANCE
+可重分类OCI其他 | ABLE_OCI_OTHER
+可重分类OCI平衡项 | ABLE_OCI_BALANCE
+OCI其他 | OCI_OTHER
+OCI平衡项 | OCI_BALANCE
+重新计量设定受益计划净额 | SETUP_PROFIT_CHANGE
+权益法下不能转损益的其他综合收益 | 权益法下在被投资单位不能重分类进损益的其他综合收益中享有的份额 | RIGHTLAW_UNABLE_OCI
+权益法下可转损益的其他综合收益 | 权益法下在被投资单位以后将重分类进损益的其他综合收益中享有的份额 | RIGHTLAW_ABLE_OCI
+企业自身信用风险公允价值变动 | CREDITRISK_FAIRVALUE_CHANGE
+其他权益工具投资公允价值变动 | OTHERRIGHT_FAIRVALUE_CHANGE
+可供出售金融资产公允价值变动 | AFA_FAIRVALUE_CHANGE
+持有至到期投资重分类为可供出售公允价值变动 | HMI_AFA
+债权投资公允价值变动 | CREDITOR_FAIRVALUE_CHANGE
+债权投资信用减值准备 | CREDITOR_IMPAIRMENT_RESERVE
+金融资产其他综合收益 | FINANCE_OCI_AMT
+综合收益总额平衡项 | TCI_BALANCE
+综合收益总额其他 | TCI_OTHER
+被合并方在合并前实现综合收益 | PRECOMBINE_TCI
+影响综合收益总额平衡项 | EFFECT_TCI_BALANCE
+ACF期末收益 | ACF_END_INCOME
+审计意见类型 | OPINION_TYPE
+内控审计意见类型 | OSOPINION_TYPE
+上市状态 | LISTING_STATE

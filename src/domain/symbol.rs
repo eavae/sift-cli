@@ -5,7 +5,7 @@
 use super::market::Market;
 use crate::error::SiftError;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Symbol {
     /// Numeric code with leading zeros preserved: 6 digits for CN A-share,
     /// 5 digits for HK. Always lowercase ASCII digits (i.e. just digits).
@@ -72,6 +72,10 @@ fn assemble(code: &str, mkt_hint: Option<&str>) -> Result<Symbol, SiftError> {
     let expected_len = match market {
         Market::CnA => 6,
         Market::Hk => 5,
+        // `Us` is not reachable here: `assemble` only resolves to `CnA`
+        // (sh/sz/bj or 6-digit) or `Hk` (hk or 5-digit). US support via
+        // Symbol::parse would require its own suffix branch.
+        Market::Us => unreachable!("Symbol::parse does not yield Market::Us"),
     };
     if code.len() != expected_len {
         return Err(SiftError::Parse(format!(

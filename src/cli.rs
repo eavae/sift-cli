@@ -32,6 +32,12 @@ pub enum UserFormat {
 pub enum Command {
     /// Fuzzy-search the cninfo A-share + HK listings
     Search(SearchArgs),
+    /// Financial statements + key indicators (income / balance /
+    /// cashflow / indicator / periods)
+    Financials {
+        #[command(subcommand)]
+        cmd: crate::commands::financials::FinancialsCmd,
+    },
 }
 
 #[derive(clap::Args, Debug)]

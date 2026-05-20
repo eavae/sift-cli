@@ -59,15 +59,19 @@ impl HttpClient {
     /// budget.
     pub fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SiftError> {
         let mut last_err: Option<SiftError> = None;
+        // One initial attempt plus `BACKOFF_SECS.len()` retries. The
+        // final iteration has no corresponding sleep slot, so
+        // `BACKOFF_SECS.get(attempt)` is `None` there and we skip the
+        // wait — this is the structural reason we tolerate an
+        // `attempt` index that's one larger than the slice.
         for attempt in 0..=BACKOFF_SECS.len() {
             match self.agent.get(url).call() {
                 Ok(resp) => return read_body(resp),
                 Err(ureq::Error::Status(code, resp)) if RETRY_CODES.contains(&code) => {
                     last_err =
                         Some(SiftError::Network(format!("GET {url} -> {code}")));
-                    if attempt < BACKOFF_SECS.len() {
-                        let wait = retry_after_secs(&resp)
-                            .unwrap_or(BACKOFF_SECS[attempt]);
+                    if let Some(&base_wait) = BACKOFF_SECS.get(attempt) {
+                        let wait = retry_after_secs(&resp).unwrap_or(base_wait);
                         if wait > 0 {
                             std::thread::sleep(Duration::from_secs(wait));
                         }

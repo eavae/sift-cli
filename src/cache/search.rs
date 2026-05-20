@@ -7,6 +7,7 @@
 //! isolated cache root, override base URL, and an explicit warn sink
 //! so unit tests do not have to manipulate `$HOME` or capture stderr.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -54,6 +55,33 @@ pub struct SearchCacheOpts {
     /// check) but still write the new response on success — so the
     /// next caller benefits from the refresh.
     pub no_cache: bool,
+}
+
+/// Read the on-disk cninfo cache and return a `code → zwjc` map
+/// without ever triggering a network fetch. Used by F2 to back-fill
+/// the security name for rows where the upstream source did not
+/// supply one (sina returns blank names). Returns an empty map when
+/// the cache files do not exist, are unreadable, or fail to parse —
+/// the caller treats that as "no backfill available".
+pub fn load_cached_names() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let Ok(root) = super::cache_root() else {
+        return map;
+    };
+    let cninfo_dir = root.join("cninfo");
+    for fname in ["szse_stock.json", "hke_stock.json"] {
+        let path = cninfo_dir.join(fname);
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(rows) = cninfo::parse_envelope(&bytes, "name-backfill") else {
+            continue;
+        };
+        for r in rows {
+            map.insert(r.code, r.zwjc);
+        }
+    }
+    map
 }
 
 /// Production entry: caches under `~/.sift/cache/cninfo/`; warnings go

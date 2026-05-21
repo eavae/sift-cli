@@ -15,14 +15,14 @@
 
 use crate::domain::{FinancialRow, Query};
 use crate::error::SiftError;
-use crate::sources::financial_source::Context;
+use crate::http::HttpClient;
 
 use super::EastmoneyFinancialSource;
 
 pub(crate) fn fetch(
     _src: &EastmoneyFinancialSource,
     _q: &Query,
-    _ctx: &Context,
+    _http: &HttpClient,
 ) -> Result<Vec<FinancialRow>, SiftError> {
     Ok(Vec::new())
 }
@@ -45,7 +45,7 @@ mod tests {
             periods: vec![Period::Annual(2024)],
             scope: Scope::Consolidated,
         };
-        let rows = fetch(&src, &q, &Context::default()).unwrap();
+        let rows = fetch(&src, &q, &HttpClient::new()).unwrap();
         assert!(rows.is_empty());
     }
 }

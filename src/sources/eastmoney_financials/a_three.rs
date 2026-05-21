@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 
 use crate::domain::{FinancialRow, Query, Scope, Statement, Symbol};
 use crate::error::SiftError;
-use crate::sources::financial_source::Context;
+use crate::http::HttpClient;
 
 use super::translate;
 use super::EastmoneyFinancialSource;
@@ -26,15 +26,15 @@ const DATES_PER_BATCH: usize = 5;
 pub(crate) fn fetch(
     src: &EastmoneyFinancialSource,
     q: &Query,
-    ctx: &Context,
+    http: &HttpClient,
 ) -> Result<Vec<FinancialRow>, SiftError> {
     let slug = statement_slug(q.statement);
     let code = translate::a_share_code(&q.symbol);
     let report_type = if q.scope == Scope::Consolidated { 1 } else { 2 };
 
-    let ct = resolve_company_type(src, &q.symbol, slug, &code, ctx)?;
+    let ct = resolve_company_type(src, &q.symbol, slug, &code, http)?;
 
-    let dates_all = list_dates(&src.urls().hsf10_base, ct, slug, &code, ctx)?;
+    let dates_all = list_dates(&src.urls().hsf10_base, ct, slug, &code, http)?;
     let dates_filtered = translate::filter_dates(dates_all, &q.periods);
     if dates_filtered.is_empty() {
         return Ok(Vec::new());
@@ -48,7 +48,7 @@ pub(crate) fn fetch(
             rt = report_type,
             dates = chunk.join(","),
         );
-        let bytes = ctx.http.get_bytes(&url)?;
+        let bytes = http.get_bytes(&url)?;
         let resp: WideResp = serde_json::from_slice(&bytes)
             .map_err(|e| SiftError::Internal(format!("eastmoney {slug}AjaxNew parse: {e}")))?;
 
@@ -89,7 +89,7 @@ fn resolve_company_type(
     sym: &Symbol,
     slug: &str,
     code: &str,
-    ctx: &Context,
+    http: &HttpClient,
 ) -> Result<u8, SiftError> {
     {
         let cache = src.company_type_cache().lock().unwrap();
@@ -102,7 +102,7 @@ fn resolve_company_type(
             "{base}/{slug}DateAjaxNew?companyType={ct}&reportDateType=0&code={code}",
             base = src.urls().hsf10_base,
         );
-        let bytes = ctx.http.get_bytes(&url)?;
+        let bytes = http.get_bytes(&url)?;
         let resp: DateResp = serde_json::from_slice(&bytes).map_err(|e| {
             SiftError::Internal(format!("eastmoney {slug}DateAjaxNew parse: {e}"))
         })?;
@@ -123,12 +123,12 @@ fn list_dates(
     ct: u8,
     slug: &str,
     code: &str,
-    ctx: &Context,
+    http: &HttpClient,
 ) -> Result<Vec<String>, SiftError> {
     let url = format!(
         "{base}/{slug}DateAjaxNew?companyType={ct}&reportDateType=0&code={code}"
     );
-    let bytes = ctx.http.get_bytes(&url)?;
+    let bytes = http.get_bytes(&url)?;
     let resp: DateResp = serde_json::from_slice(&bytes)
         .map_err(|e| SiftError::Internal(format!("eastmoney {slug}DateAjaxNew parse: {e}")))?;
     Ok(resp.data.into_iter().map(|d| d.report_date).collect())
@@ -270,7 +270,7 @@ mod tests {
 
         let src = EastmoneyFinancialSource::with_urls(server.url(), server.url());
         let q = income_query(maotai_sym(), vec![Period::Annual(2025)], Scope::Consolidated);
-        let rows = src.fetch(&q, &Context::default()).unwrap();
+        let rows = src.fetch(&q, &HttpClient::new()).unwrap();
 
         // Five non-metadata, non-YOY numeric columns in the fixture.
         assert_eq!(rows.len(), 5, "rows: {rows:#?}");
@@ -315,7 +315,7 @@ mod tests {
 
         let src = EastmoneyFinancialSource::with_urls(server.url(), server.url());
         let q = income_query(maotai_sym(), vec![Period::Annual(2025)], Scope::Parent);
-        let rows = src.fetch(&q, &Context::default()).unwrap();
+        let rows = src.fetch(&q, &HttpClient::new()).unwrap();
         assert!(!rows.is_empty());
         m_wide.assert();
     }
@@ -359,7 +359,7 @@ mod tests {
         ];
         let src = EastmoneyFinancialSource::with_urls(server.url(), server.url());
         let _ = src
-            .fetch(&income_query(maotai_sym(), periods, Scope::Consolidated), &Context::default())
+            .fetch(&income_query(maotai_sym(), periods, Scope::Consolidated), &HttpClient::new())
             .unwrap();
         m_wide.assert();
     }
@@ -403,7 +403,7 @@ mod tests {
         let _ = src
             .fetch(
                 &income_query(pa_bank_sym(), vec![Period::Annual(2025)], Scope::Consolidated),
-                &Context::default(),
+                &HttpClient::new(),
             )
             .unwrap();
         m4.assert();
@@ -459,7 +459,7 @@ mod tests {
         let _ = src
             .fetch(
                 &income_query(pa_insurance_sym(), vec![Period::Annual(2025)], Scope::Consolidated),
-                &Context::default(),
+                &HttpClient::new(),
             )
             .unwrap();
         m2.assert();
@@ -480,7 +480,7 @@ mod tests {
         let err = src
             .fetch(
                 &income_query(citic_sym(), vec![Period::Annual(2025)], Scope::Consolidated),
-                &Context::default(),
+                &HttpClient::new(),
             )
             .unwrap_err();
         match err {
@@ -523,8 +523,8 @@ mod tests {
 
         let src = EastmoneyFinancialSource::with_urls(server.url(), server.url());
         let q = income_query(pa_bank_sym(), vec![Period::Annual(2025)], Scope::Consolidated);
-        let _ = src.fetch(&q, &Context::default()).unwrap();
-        let _ = src.fetch(&q, &Context::default()).unwrap();
+        let _ = src.fetch(&q, &HttpClient::new()).unwrap();
+        let _ = src.fetch(&q, &HttpClient::new()).unwrap();
         // The expect(1) on the ct=4 probe is what proves the cache: a
         // second query without caching would have re-probed ct=4 again.
         m3.assert();
@@ -555,7 +555,7 @@ mod tests {
         let rows = src
             .fetch(
                 &income_query(maotai_sym(), vec![Period::Annual(2025)], Scope::Parent),
-                &Context::default(),
+                &HttpClient::new(),
             )
             .unwrap();
         // No silent fall back to consolidated — empty rows is the right answer.
@@ -596,7 +596,7 @@ mod tests {
                     vec![Period::Annual(2025), Period::Q1(2025)],
                     Scope::Consolidated,
                 ),
-                &Context::default(),
+                &HttpClient::new(),
             )
             .unwrap();
         m_wide.assert();
@@ -622,7 +622,7 @@ mod tests {
         let err = src
             .fetch(
                 &income_query(maotai_sym(), vec![Period::Annual(2025)], Scope::Consolidated),
-                &Context::default(),
+                &HttpClient::new(),
             )
             .unwrap_err();
         // The HTTP retry inside F1 will retry the 503; either way the
@@ -660,7 +660,7 @@ mod tests {
         let rows = src
             .fetch(
                 &income_query(maotai_sym(), vec![Period::Annual(2025)], Scope::Consolidated),
-                &Context::default(),
+                &HttpClient::new(),
             )
             .unwrap();
         let sentinel = rows

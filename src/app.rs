@@ -1,17 +1,12 @@
 //! Process-wide ambient state assembled in `main.rs` and threaded
 //! down by reference.
 //!
-//! Replaces three older global / Arc-based shapes that previously
-//! coexisted:
-//! - `sources::financial_source::Context` (HTTP + financials cache only)
-//! - `cache::record::RecordCache::shared()` (`OnceLock` singleton)
-//! - `sources::financial_source::REGISTRY` (`OnceLock` source list)
-//!
-//! Now: a single `AppContext` owns all of those as plain fields. Every
-//! `fetch::*` and `commands::*` entry point takes `&AppContext`; nothing
-//! reads a static global. Per-command construction lives in `main.rs`
-//! (`run_search` / `run_report` / `run_announce`), each filling in only
-//! the fields its command needs and leaving the rest at defaults.
+//! `AppContext` is the **cross-cutting infrastructure bag** — every
+//! field is used by ≥2 commands. F2-specific state (the source
+//! list) is **not** here; it lives in [`crate::fetch::report::ReportContext`],
+//! which wraps `&AppContext` with the F2 sources slice. The split
+//! keeps `AppContext` stable as new features land — F4/F5 add their
+//! own per-feature contexts rather than growing this struct.
 //!
 //! ## Why no `Arc`
 //!
@@ -25,17 +20,18 @@
 //! ## Defaults
 //!
 //! `AppContext::default()` produces an in-memory zero-state: a real
-//! `HttpClient` (so source tests that do live HTTP work), no caches,
-//! no sources. Unit tests opt into whatever subset they need via
-//! struct-update syntax.
+//! `HttpClient` (so source tests that do live HTTP work), no caches.
+//! Unit tests opt into whatever subset they need via struct-update
+//! syntax.
 
 use crate::cache::file::FileCache;
 use crate::cache::record::RecordCache;
 use crate::http::HttpClient;
-use crate::sources::financial_source::FinancialSource;
 
-/// Ambient state for the whole binary. Constructed once per command
-/// in `main.rs`, borrowed everywhere downstream.
+/// Cross-cutting state for the whole binary. Three fields, all used
+/// by ≥2 commands: HTTP transport (3/3), file cache (3/3), record
+/// cache (report + announce). Per-feature state hangs off feature
+/// contexts (see [`crate::fetch::report::ReportContext`]).
 #[derive(Default)]
 pub struct AppContext {
     /// Shared HTTP client. Cheap to construct; we still keep one
@@ -53,8 +49,4 @@ pub struct AppContext {
     /// the command didn't need a record cache or when opening the
     /// file failed (warn-and-continue path in `main.rs`).
     pub records_cache: Option<RecordCache>,
-    /// Registered F2 sources, in dispatch order. Empty when the
-    /// command isn't `report`; that's also what unit tests use when
-    /// they want to test dispatch with an explicit slice.
-    pub sources: Vec<Box<dyn FinancialSource>>,
 }

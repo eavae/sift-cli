@@ -35,8 +35,19 @@ use crate::error::SiftError;
 use crate::sources::financial_source::FinancialSource;
 
 // ===========================================================================
-// Dispatch
+// ReportContext + dispatch
 // ===========================================================================
+
+/// F2-specific ambient state: the cross-cutting [`AppContext`] plus
+/// the registered source list. Constructed by `main::run_report` and
+/// passed through `commands::report::run` down into the dispatch
+/// functions. Borrowed everywhere — `app` and `sources` each live in
+/// their own slot on `main`'s stack frame, so the wrapper just
+/// bundles two references for ergonomic single-argument signatures.
+pub struct ReportContext<'a> {
+    pub app: &'a AppContext,
+    pub sources: &'a [Box<dyn FinancialSource>],
+}
 
 /// First-success-wins dispatch across every applicable source in
 /// `ctx.sources`. Each worker hits the per-source cache first and
@@ -45,10 +56,10 @@ use crate::sources::financial_source::FinancialSource;
 /// [`SiftError::AllSourcesFailed`].
 pub fn dispatch_with_cache(
     query: &Query,
-    ctx: &AppContext,
+    ctx: &ReportContext,
 ) -> Result<Vec<FinancialRow>, SiftError> {
     let refs: Vec<&dyn FinancialSource> = ctx.sources.iter().map(|b| b.as_ref()).collect();
-    dispatch_inner(query, ctx, &refs)
+    dispatch_inner(query, ctx.app, &refs)
 }
 
 /// Like [`dispatch_with_cache`] but restricted to a single named
@@ -57,7 +68,7 @@ pub fn dispatch_with_cache(
 /// `NoApplicableSource` listing the registered sources.
 pub fn dispatch_with_cache_named(
     query: &Query,
-    ctx: &AppContext,
+    ctx: &ReportContext,
     name: Option<&str>,
 ) -> Result<Vec<FinancialRow>, SiftError> {
     let Some(want) = name else {
@@ -70,15 +81,16 @@ pub fn dispatch_with_cache_named(
             known.join(", ")
         )));
     };
-    dispatch_inner(query, ctx, &[src.as_ref()])
+    dispatch_inner(query, ctx.app, &[src.as_ref()])
 }
 
-/// Race a fixed slice of source references; private because the two
-/// public entry points construct that slice for it (either the full
-/// `ctx.sources` view or the one-element pinned view).
+/// Race a fixed slice of source references against the shared
+/// `AppContext`; private because the two public entry points
+/// construct that slice for it (either the full `ctx.sources` view
+/// or the one-element pinned view).
 fn dispatch_inner(
     query: &Query,
-    ctx: &AppContext,
+    app: &AppContext,
     sources: &[&dyn FinancialSource],
 ) -> Result<Vec<FinancialRow>, SiftError> {
     let applicable: Vec<&dyn FinancialSource> = sources
@@ -106,7 +118,7 @@ fn dispatch_inner(
             let name = src.name();
             scope.spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    fetch_with_per_source_cache(src, query, ctx, today)
+                    fetch_with_per_source_cache(src, query, app, today)
                 }))
                 .unwrap_or_else(|payload| {
                     Err(SiftError::Network(format!(
@@ -138,14 +150,14 @@ fn dispatch_inner(
 fn fetch_with_per_source_cache(
     src: &dyn FinancialSource,
     q: &Query,
-    ctx: &AppContext,
+    app: &AppContext,
     today: Date,
 ) -> Result<Vec<FinancialRow>, SiftError> {
     let source_tag = SourceTag::from_name(src.name()).unwrap_or(SourceTag::EastMoney);
     let mut cached: Vec<FinancialRow> = Vec::new();
     let mut miss_periods: Vec<Period> = Vec::new();
 
-    if let Some(cache) = ctx.records_cache.as_ref() {
+    if let Some(cache) = app.records_cache.as_ref() {
         for p in &q.periods {
             match financials_cache_get(cache, &q.symbol, q.statement, *p, q.scope, source_tag, today) {
                 Some(rows) => cached.extend(rows),
@@ -164,8 +176,8 @@ fn fetch_with_per_source_cache(
         periods: miss_periods,
         ..q.clone()
     };
-    let fresh = src.fetch(&sub_query, ctx)?;
-    if let Some(cache) = ctx.records_cache.as_ref() {
+    let fresh = src.fetch(&sub_query, &app.http)?;
+    if let Some(cache) = app.records_cache.as_ref() {
         financials_cache_put(cache, &fresh, source_tag, src.name());
     }
     cached.extend(fresh);
@@ -207,14 +219,14 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 /// this symbol + default scope").
 pub fn list_periods_union(
     symbol: &Symbol,
-    ctx: &AppContext,
+    ctx: &ReportContext,
     pinned: Option<&str>,
 ) -> Result<Vec<(Date, PeriodType, String)>, SiftError> {
     use std::collections::BTreeSet;
 
     let mut any_called = false;
     let mut union: BTreeSet<(Date, PeriodType, String)> = BTreeSet::new();
-    for src in &ctx.sources {
+    for src in ctx.sources {
         if let Some(want) = pinned {
             if src.name() != want {
                 continue;
@@ -230,7 +242,7 @@ pub fn list_periods_union(
             continue;
         }
         any_called = true;
-        if let Ok(periods) = src.list_periods(symbol, ctx) {
+        if let Ok(periods) = src.list_periods(symbol, &ctx.app.http) {
             for p in periods {
                 let pt = p.period_type().unwrap_or(PeriodType::Annual);
                 union.insert((p.end_date(), pt, src.name().to_string()));
@@ -489,6 +501,7 @@ mod tests {
     use super::*;
     use crate::domain::market::Market;
     use crate::domain::{AuditStatus, Scope, Statement};
+    use crate::http::HttpClient;
     use std::time::Duration;
     use time::Month;
 
@@ -535,13 +548,13 @@ mod tests {
         fn supports(&self, q: &Query) -> bool {
             (self.supports_fn)(q)
         }
-        fn fetch(&self, q: &Query, _ctx: &AppContext) -> Result<Vec<FinancialRow>, SiftError> {
+        fn fetch(&self, q: &Query, _http: &HttpClient) -> Result<Vec<FinancialRow>, SiftError> {
             (self.fetch_fn)(q)
         }
         fn list_periods(
             &self,
             _symbol: &Symbol,
-            _ctx: &AppContext,
+            _http: &HttpClient,
         ) -> Result<Vec<Period>, SiftError> {
             match &self.periods_fn {
                 Some(f) => f(),
@@ -585,19 +598,20 @@ mod tests {
         }
     }
 
-    /// Build a test context with the given sources and no caches.
-    /// `financials_cache = None` means `dispatch_inner` skips the
-    /// cache pre-filter — same effect the old `dispatch_against`
-    /// helper used to have.
-    fn ctx_with(sources: Vec<Box<dyn FinancialSource>>) -> AppContext {
-        AppContext {
-            sources,
-            ..Default::default()
-        }
+    /// Build the no-cache `AppContext` shared by every dispatch test.
+    /// `records_cache = None` skips the F2 cache pre-filter; the F2
+    /// `financials_cache_*` adapter tests build their own ctx.
+    fn empty_app() -> AppContext {
+        AppContext::default()
     }
 
     fn run(sources: Vec<Box<dyn FinancialSource>>) -> Result<Vec<FinancialRow>, SiftError> {
-        dispatch_with_cache(&fixture_query(), &ctx_with(sources))
+        let app = empty_app();
+        let ctx = ReportContext {
+            app: &app,
+            sources: &sources,
+        };
+        dispatch_with_cache(&fixture_query(), &ctx)
     }
 
     // ---- dispatch tests ----------------------------------------------
@@ -783,7 +797,9 @@ mod tests {
         let sina = MockSource::new("sina", |_| true, |_| Ok(vec![]))
             .with_periods(|| Ok(vec![Period::Annual(2024), Period::Annual(2022)]));
 
-        let ctx = ctx_with(vec![Box::new(em), Box::new(sina)]);
+        let app = empty_app();
+        let srcs: Vec<Box<dyn FinancialSource>> = vec![Box::new(em), Box::new(sina)];
+        let ctx = ReportContext { app: &app, sources: &srcs };
         let got = list_periods_union(&maotai(), &ctx, None).unwrap();
         // 4 rows: (2024, em), (2024, sina), (2023, em), (2022, sina);
         // newest-first by date, tiebreak source name asc.
@@ -806,7 +822,9 @@ mod tests {
         let sina = MockSource::new("sina", |_| true, |_| Ok(vec![]))
             .with_periods(|| panic!("sina.list_periods must not be called when pinned=em"));
 
-        let ctx = ctx_with(vec![Box::new(em), Box::new(sina)]);
+        let app = empty_app();
+        let srcs: Vec<Box<dyn FinancialSource>> = vec![Box::new(em), Box::new(sina)];
+        let ctx = ReportContext { app: &app, sources: &srcs };
         let got = list_periods_union(&maotai(), &ctx, Some("em")).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].2, "em");
@@ -817,7 +835,9 @@ mod tests {
         let em = MockSource::new("em", |_| false, |_| Ok(vec![]))
             .with_periods(|| panic!("supports=false must short-circuit"));
         let sina = MockSource::new("sina", |_| false, |_| Ok(vec![]));
-        let ctx = ctx_with(vec![Box::new(em), Box::new(sina)]);
+        let app = empty_app();
+        let srcs: Vec<Box<dyn FinancialSource>> = vec![Box::new(em), Box::new(sina)];
+        let ctx = ReportContext { app: &app, sources: &srcs };
         let err = list_periods_union(&maotai(), &ctx, None).unwrap_err();
         assert!(matches!(err, SiftError::NoApplicableSource(_)));
     }
@@ -826,7 +846,9 @@ mod tests {
     fn list_periods_union_pinned_unknown_name_returns_no_applicable_source() {
         let em = MockSource::new("em", |_| true, |_| Ok(vec![]))
             .with_periods(|| Ok(vec![Period::Annual(2024)]));
-        let ctx = ctx_with(vec![Box::new(em)]);
+        let app = empty_app();
+        let srcs: Vec<Box<dyn FinancialSource>> = vec![Box::new(em)];
+        let ctx = ReportContext { app: &app, sources: &srcs };
         let err = list_periods_union(&maotai(), &ctx, Some("nope")).unwrap_err();
         assert!(matches!(err, SiftError::NoApplicableSource(_)));
     }

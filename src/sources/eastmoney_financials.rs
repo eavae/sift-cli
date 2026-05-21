@@ -36,7 +36,8 @@ use std::sync::Mutex;
 use crate::domain::market::Market;
 use crate::domain::{FinancialRow, Query, Scope, Statement, Symbol};
 use crate::error::SiftError;
-use crate::sources::financial_source::{Context, FinancialSource};
+use crate::http::HttpClient;
+use crate::sources::financial_source::FinancialSource;
 
 /// Production defaults — the real EM endpoints.
 const DEFAULT_HSF10_BASE: &str =
@@ -129,13 +130,13 @@ impl FinancialSource for EastmoneyFinancialSource {
         }
     }
 
-    fn fetch(&self, q: &Query, ctx: &Context) -> Result<Vec<FinancialRow>, SiftError> {
+    fn fetch(&self, q: &Query, http: &HttpClient) -> Result<Vec<FinancialRow>, SiftError> {
         match (q.symbol.market, q.statement) {
-            (Market::CnA, Statement::Indicator) => indicator::fetch_a(self, q, ctx),
-            (Market::CnA, _) => a_three::fetch(self, q, ctx),
-            (Market::Hk, Statement::Indicator) => indicator::fetch_hk(self, q, ctx),
-            (Market::Hk, _) => hk_three::fetch(self, q, ctx),
-            (Market::Us, _) => us_three::fetch(self, q, ctx),
+            (Market::CnA, Statement::Indicator) => indicator::fetch_a(self, q, http),
+            (Market::CnA, _) => a_three::fetch(self, q, http),
+            (Market::Hk, Statement::Indicator) => indicator::fetch_hk(self, q, http),
+            (Market::Hk, _) => hk_three::fetch(self, q, http),
+            (Market::Us, _) => us_three::fetch(self, q, http),
         }
     }
 }

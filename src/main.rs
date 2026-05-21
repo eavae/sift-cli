@@ -72,14 +72,16 @@ fn run_search(args: cli::SearchArgs, fmt: output::Format) -> Result<(), SiftErro
     let ctx = AppContext {
         http: http::HttpClient::new(),
         file_cache: open_file_cache(),
-        ..Default::default()
+        records_cache: None,
     };
     commands::search::run(args, &ctx, fmt)
 }
 
-/// Build the AppContext for `sift report` and dispatch the chosen
-/// subcommand. The F2 source list is constructed inline (one
-/// EastMoney + one sina) so there's no hidden global to install.
+/// Build the AppContext + ReportContext for `sift report` and dispatch.
+/// The F2 source list is constructed inline (EastMoney + sina) — there's
+/// no hidden global registry. AppContext and the sources Vec each live
+/// in their own slot on this stack frame; `ReportContext { app, sources }`
+/// is a borrowed bundle for ergonomic single-argument dispatch.
 fn run_report(
     cmd: crate::commands::report::ReportCmd,
     fmt: output::Format,
@@ -87,14 +89,18 @@ fn run_report(
     let file_cache = open_file_cache();
     let records_cache = open_records_cache(file_cache.as_ref());
 
-    let ctx = AppContext {
+    let app = AppContext {
         http: http::HttpClient::new(),
         file_cache,
         records_cache,
-        sources: vec![
-            sources::eastmoney_financials::build(),
-            sources::sina_financials::build(),
-        ],
+    };
+    let sources = vec![
+        sources::eastmoney_financials::build(),
+        sources::sina_financials::build(),
+    ];
+    let ctx = fetch::report::ReportContext {
+        app: &app,
+        sources: &sources,
     };
     commands::report::run(cmd, &ctx, fmt)
 }
@@ -112,7 +118,6 @@ fn run_announce(
         http: http::HttpClient::new(),
         file_cache,
         records_cache,
-        ..Default::default()
     };
     commands::announce::run(cmd, &ctx, fmt)
 }

@@ -14,7 +14,7 @@ use crate::domain::{
     items_dict, AuditStatus, FinancialRow, Period, PeriodType, Query, SourceTag, Symbol, Unit,
 };
 use crate::error::SiftError;
-use crate::sources::financial_source::Context;
+use crate::http::HttpClient;
 
 use super::translate;
 use super::EastmoneyFinancialSource;
@@ -22,7 +22,7 @@ use super::EastmoneyFinancialSource;
 pub(crate) fn fetch_a(
     src: &EastmoneyFinancialSource,
     q: &Query,
-    ctx: &Context,
+    http: &HttpClient,
 ) -> Result<Vec<FinancialRow>, SiftError> {
     let secucode = format!(
         "{}.{}",
@@ -35,7 +35,7 @@ pub(crate) fn fetch_a(
          &source=HSF10&client=PC",
         base = src.urls().datacenter_base,
     );
-    let bytes = ctx.http.get_bytes(&url)?;
+    let bytes = http.get_bytes(&url)?;
     let resp: WideLongResp = serde_json::from_slice(&bytes)
         .map_err(|e| SiftError::Internal(format!("eastmoney indicator A parse: {e}")))?;
 
@@ -63,7 +63,7 @@ pub(crate) fn fetch_a(
 pub(crate) fn fetch_hk(
     _src: &EastmoneyFinancialSource,
     _q: &Query,
-    _ctx: &Context,
+    _http: &HttpClient,
 ) -> Result<Vec<FinancialRow>, SiftError> {
     Ok(Vec::new())
 }
@@ -192,7 +192,7 @@ mod tests {
             periods: vec![Period::Annual(2025)],
             scope: Scope::Consolidated,
         };
-        let rows = fetch_a(&src, &q, &Context::default()).unwrap();
+        let rows = fetch_a(&src, &q, &HttpClient::new()).unwrap();
         assert!(rows.len() >= 5, "rows: {rows:#?}");
         for r in &rows {
             assert_eq!(r.statement, Statement::Indicator);
@@ -219,7 +219,7 @@ mod tests {
             periods: vec![Period::Annual(2024)],
             scope: Scope::Consolidated,
         };
-        let rows = fetch_hk(&src, &q, &Context::default()).unwrap();
+        let rows = fetch_hk(&src, &q, &HttpClient::new()).unwrap();
         assert!(rows.is_empty());
     }
 }

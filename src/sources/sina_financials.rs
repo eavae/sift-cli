@@ -27,7 +27,8 @@ use crate::domain::{
     Symbol, Unit,
 };
 use crate::error::SiftError;
-use crate::sources::financial_source::{Context, FinancialSource};
+use crate::http::HttpClient;
+use crate::sources::financial_source::FinancialSource;
 
 const DEFAULT_BASE: &str =
     "https://quotes.sina.cn/cn/api/openapi.php/CompanyFinanceService.getFinanceReport2022";
@@ -85,9 +86,9 @@ impl FinancialSource for SinaFinancialSource {
         }
     }
 
-    fn fetch(&self, q: &Query, ctx: &Context) -> Result<Vec<FinancialRow>, SiftError> {
+    fn fetch(&self, q: &Query, http: &HttpClient) -> Result<Vec<FinancialRow>, SiftError> {
         let url = build_url(&self.base_url, q)?;
-        let bytes = ctx.http.get_bytes(&url)?;
+        let bytes = http.get_bytes(&url)?;
         let raw: SinaResp = serde_json::from_slice(&bytes)
             .map_err(|e| SiftError::Internal(format!("sina parse: {e}")))?;
         if raw.result.status.code != 0 {
@@ -295,8 +296,9 @@ fn audit_from_str(s: &str) -> AuditStatus {
 mod tests {
     use super::*;
     use crate::app::AppContext;
-    use crate::fetch::report::dispatch_with_cache;
+    use crate::fetch::report::{dispatch_with_cache, ReportContext};
     use crate::sources::eastmoney_financials::EastmoneyFinancialSource;
+    use crate::sources::financial_source::FinancialSource;
 
     fn cn_a(code: &str) -> Symbol {
         Symbol {
@@ -476,7 +478,7 @@ mod tests {
         let rows = src
             .fetch(
                 &income_query(cn_a("600519"), vec![]),
-                &Context::default(),
+                &HttpClient::new(),
             )
             .unwrap();
 
@@ -534,7 +536,7 @@ mod tests {
         let rows = src
             .fetch(
                 &income_query(cn_a("600519"), vec![Period::Annual(2025)]),
-                &Context::default(),
+                &HttpClient::new(),
             )
             .unwrap();
         assert!(!rows.is_empty());
@@ -570,7 +572,7 @@ mod tests {
         let src = SinaFinancialSource::with_url(server.url());
 
         let rows = src
-            .fetch(&income_query(cn_a("600519"), vec![]), &Context::default())
+            .fetch(&income_query(cn_a("600519"), vec![]), &HttpClient::new())
             .unwrap();
         let pt_by_date: std::collections::HashMap<_, _> =
             rows.iter().map(|r| (r.period, r.period_type)).collect();
@@ -596,7 +598,7 @@ mod tests {
         let rows = src
             .fetch(
                 &income_query(cn_a("600519"), vec![Period::Annual(2025)]),
-                &Context::default(),
+                &HttpClient::new(),
             )
             .unwrap();
         assert_eq!(rows.len(), 6);
@@ -609,7 +611,7 @@ mod tests {
         let _m = mock_sina(&mut server, body);
         let src = SinaFinancialSource::with_url(server.url());
         let err = src
-            .fetch(&income_query(cn_a("600519"), vec![]), &Context::default())
+            .fetch(&income_query(cn_a("600519"), vec![]), &HttpClient::new())
             .unwrap_err();
         assert!(matches!(err, SiftError::Network(_)), "got {err:?}");
         assert!(err.to_string().contains("sina"));
@@ -622,7 +624,7 @@ mod tests {
         let _m = mock_sina(&mut server, body);
         let src = SinaFinancialSource::with_url(server.url());
         let err = src
-            .fetch(&income_query(cn_a("600519"), vec![]), &Context::default())
+            .fetch(&income_query(cn_a("600519"), vec![]), &HttpClient::new())
             .unwrap_err();
         assert!(matches!(err, SiftError::Parse(_)), "got {err:?}");
     }
@@ -635,7 +637,7 @@ mod tests {
         let src = SinaFinancialSource::with_url(server.url());
 
         let _ = src
-            .fetch(&income_query(cn_a("600519"), vec![]), &Context::default())
+            .fetch(&income_query(cn_a("600519"), vec![]), &HttpClient::new())
             .unwrap();
         let drained = items_dict::drain_unmapped();
         assert!(
@@ -695,10 +697,9 @@ mod tests {
 
         let em = build_em(&server);
         let sina = build_sina(&server);
-        let ctx = AppContext {
-            sources: vec![Box::new(em), Box::new(sina)],
-            ..Default::default()
-        };
+        let app = AppContext::default();
+        let srcs: Vec<Box<dyn FinancialSource>> = vec![Box::new(em), Box::new(sina)];
+        let ctx = ReportContext { app: &app, sources: &srcs };
 
         let q = income_query(cn_a("600519"), vec![Period::Annual(2025)]);
         let rows = dispatch_with_cache(&q, &ctx).unwrap();
@@ -731,10 +732,9 @@ mod tests {
             .create();
         let em = build_em(&server);
         let sina = build_sina(&server);
-        let ctx = AppContext {
-            sources: vec![Box::new(em), Box::new(sina)],
-            ..Default::default()
-        };
+        let app = AppContext::default();
+        let srcs: Vec<Box<dyn FinancialSource>> = vec![Box::new(em), Box::new(sina)];
+        let ctx = ReportContext { app: &app, sources: &srcs };
         let q = income_query(cn_a("600519"), vec![Period::Annual(2025)]);
         let rows = dispatch_with_cache(&q, &ctx).unwrap();
         assert_eq!(rows[0].source, SourceTag::Sina);

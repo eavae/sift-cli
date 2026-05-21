@@ -8,10 +8,11 @@ use crate::domain::{
     items_dict, Period, Query, Scope, SourceTag, Statement, Symbol, Unit,
 };
 use crate::error::SiftError;
-use crate::fetch::report::{dispatch_with_cache_named, list_periods_union, load_listing_names};
+use crate::fetch::report::{
+    dispatch_with_cache_named, list_periods_union, load_listing_names, ReportContext,
+};
 use crate::output::financial_render::{self, pivot};
 use crate::output::Format;
-use crate::sources::financial_source::Context;
 
 /// CLI surface for `sift report`.
 #[derive(Subcommand, Debug)]
@@ -159,7 +160,7 @@ fn parse_period_token(s: &str) -> Result<Vec<Period>, String> {
 }
 
 /// Entry: dispatch the user's choice.
-pub fn run(cmd: ReportCmd, ctx: &Context, fmt: Format) -> Result<(), SiftError> {
+pub fn run(cmd: ReportCmd, ctx: &ReportContext, fmt: Format) -> Result<(), SiftError> {
     match cmd {
         ReportCmd::Income(a) => run_statement(Statement::Income, a, ctx, fmt),
         ReportCmd::Balance(a) => run_statement(Statement::Balance, a, ctx, fmt),
@@ -172,7 +173,7 @@ pub fn run(cmd: ReportCmd, ctx: &Context, fmt: Format) -> Result<(), SiftError> 
 fn run_statement(
     stmt: Statement,
     args: StatementArgs,
-    ctx: &Context,
+    ctx: &ReportContext,
     fmt: Format,
 ) -> Result<(), SiftError> {
     let symbols = parse_symbols(&args.symbols)?;
@@ -200,7 +201,7 @@ fn run_statement(
     // from the F1 cninfo listing cache. Empty map if the cache is
     // missing — render falls back to whatever `name` the source
     // already populated.
-    let names = load_listing_names(ctx);
+    let names = load_listing_names(ctx.app);
 
     let keep = resolve_items(&args.items, stmt);
     let table = pivot(all_rows, keep.as_deref(), &names);
@@ -323,7 +324,7 @@ fn emit_unmapped_hint() {
 // `periods` subcommand
 // ---------------------------------------------------------------------------
 
-fn run_periods(args: PeriodsArgs, ctx: &Context, _fmt: Format) -> Result<(), SiftError> {
+fn run_periods(args: PeriodsArgs, ctx: &ReportContext, _fmt: Format) -> Result<(), SiftError> {
     let sym = Symbol::parse(&args.symbol)?;
     let pinned = args.source.as_source_tag().map(SourceTag::as_str);
     let items = list_periods_union(&sym, ctx, pinned)?;

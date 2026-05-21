@@ -19,7 +19,7 @@ use crate::domain::{
     Symbol, Unit,
 };
 use crate::error::SiftError;
-use crate::sources::financial_source::Context;
+use crate::http::HttpClient;
 
 use super::translate;
 use super::EastmoneyFinancialSource;
@@ -35,12 +35,12 @@ struct RowMeta {
 pub(crate) fn fetch(
     src: &EastmoneyFinancialSource,
     q: &Query,
-    ctx: &Context,
+    http: &HttpClient,
 ) -> Result<Vec<FinancialRow>, SiftError> {
-    let meta_by_date = fetch_meta(src, q, ctx).unwrap_or_default();
+    let meta_by_date = fetch_meta(src, q, http).unwrap_or_default();
 
     let long_url = build_long_url(&src.urls().datacenter_base, q);
-    let bytes = ctx.http.get_bytes(&long_url)?;
+    let bytes = http.get_bytes(&long_url)?;
     let resp: LongResp = serde_json::from_slice(&bytes)
         .map_err(|e| SiftError::Internal(format!("eastmoney HK long parse: {e}")))?;
 
@@ -128,10 +128,10 @@ pub(crate) fn fetch(
 fn fetch_meta(
     src: &EastmoneyFinancialSource,
     q: &Query,
-    ctx: &Context,
+    http: &HttpClient,
 ) -> Result<HashMap<Date, RowMeta>, SiftError> {
     let url = build_summary_url(&src.urls().datacenter_base, &q.symbol);
-    let bytes = ctx.http.get_bytes(&url)?;
+    let bytes = http.get_bytes(&url)?;
     let resp: LongResp = serde_json::from_slice(&bytes)
         .map_err(|e| SiftError::Internal(format!("eastmoney HK summary parse: {e}")))?;
 
@@ -307,7 +307,7 @@ mod tests {
         let (m_sum, m_long) = mock_meta_and_long(&mut server, summary, long);
 
         let src = EastmoneyFinancialSource::with_urls(server.url(), server.url());
-        let rows = src.fetch(&balance_query(), &Context::default()).unwrap();
+        let rows = src.fetch(&balance_query(), &HttpClient::new()).unwrap();
         assert_eq!(rows.len(), 2);
         for r in &rows {
             assert_eq!(r.symbol.code, "00700");
@@ -368,7 +368,7 @@ mod tests {
             periods: vec![Period::H1(2024)],
             ..balance_query()
         };
-        let rows = src.fetch(&q, &Context::default()).unwrap();
+        let rows = src.fetch(&q, &HttpClient::new()).unwrap();
         // The summary call failed, so meta_by_date is empty; metadata
         // falls back to the long-row `DATE_TYPE_CODE` and `CURRENCY`.
         assert_eq!(rows.len(), 1, "rows: {rows:#?}");
@@ -414,7 +414,7 @@ mod tests {
             periods: vec![Period::Annual(2024), Period::Annual(2023)],
             ..balance_query()
         };
-        let rows = src.fetch(&q, &Context::default()).unwrap();
+        let rows = src.fetch(&q, &HttpClient::new()).unwrap();
         assert_eq!(rows.len(), 2, "rows: {rows:#?}");
         let years: std::collections::HashSet<i32> =
             rows.iter().map(|r| r.period.year()).collect();

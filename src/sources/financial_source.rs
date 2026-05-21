@@ -1,27 +1,17 @@
 //! `FinancialSource` trait — the source contract only.
 //!
 //! Dispatch + per-source cache coordination lives in
-//! [`crate::fetch::report`]; ambient state (HTTP client, caches,
-//! source list) lives in [`crate::app::AppContext`] and is threaded
-//! down by reference. The registered source list is now a plain
-//! `Vec<Box<dyn FinancialSource>>` field on `AppContext`, populated
-//! by `main.rs` — there is no process-global registry.
-//!
-//! `fetch` is the implementer's contract: each adapter owns its full
-//! upstream pipeline — HTTP, JSON parsing, field translation, unit
-//! conversion, and item-name normalization through
-//! [`crate::domain::items_dict::dict`]. Implementers only see
-//! [`AppContext`]; per-source cache prefilter / writeback is the
-//! dispatcher's responsibility, not the source's.
+//! [`crate::fetch::report`]. The trait deliberately takes only an
+//! [`HttpClient`] — sources are pure HTTP-bound implementations,
+//! they do not see [`AppContext`] / caches / the source list. Any
+//! cache prefilter or writeback is the dispatcher's job; expanding
+//! the trait surface (to e.g. let a source maintain its own cache)
+//! is a future-broadening decision that should be made deliberately,
+//! not by leaking ambient state through the function signature.
 
-use crate::app::AppContext;
 use crate::domain::{FinancialRow, Period, Query, Symbol};
 use crate::error::SiftError;
-
-/// Compatibility alias used during the AppContext migration. Existing
-/// source impls (`a_three`, `hk_three`, sina, …) keep using
-/// `ctx: &Context`; new code should prefer `&AppContext` directly.
-pub type Context = AppContext;
+use crate::http::HttpClient;
 
 /// One financial-data upstream.
 ///
@@ -44,7 +34,7 @@ pub trait FinancialSource: Send + Sync {
 
     /// Fetch normalized rows for `q`. See the trait docs for the
     /// implementer contract.
-    fn fetch(&self, q: &Query, ctx: &Context) -> Result<Vec<FinancialRow>, SiftError>;
+    fn fetch(&self, q: &Query, http: &HttpClient) -> Result<Vec<FinancialRow>, SiftError>;
 
     /// List the report periods this source has available for `symbol`.
     /// Default implementation returns an empty `Vec` — sources that
@@ -54,7 +44,7 @@ pub trait FinancialSource: Send + Sync {
     fn list_periods(
         &self,
         _symbol: &Symbol,
-        _ctx: &Context,
+        _http: &HttpClient,
     ) -> Result<Vec<Period>, SiftError> {
         Ok(Vec::new())
     }

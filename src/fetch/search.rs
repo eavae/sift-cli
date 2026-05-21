@@ -257,7 +257,17 @@ fn load_one(
             // Parse first, write only on success — a schema break must
             // never overwrite a (still-valid) prior snapshot.
             let rows = cninfo::parse_envelope(&bytes, ep.label)?;
-            files.write(&key, &bytes)?;
+            // Cache write failure is non-fatal: the user already has
+            // their data this call; only the next call pays the
+            // re-fetch. Matches F2 / F3's warn-and-continue policy
+            // (e.g. `cache::record::RecordCache::put_many`).
+            if let Err(e) = files.write(&key, &bytes) {
+                let _ = writeln!(
+                    warn,
+                    "[warn] cninfo {}: cache write failed ({e}); next call will re-fetch",
+                    ep.label,
+                );
+            }
             Ok(rows)
         }
         Err(net_err) => stale_fallback(files, &key, ep.label, net_err, warn),
@@ -505,6 +515,37 @@ mod tests {
         let err = call(SearchCacheOpts::default(), &files, &server).unwrap_err();
         assert!(matches!(err, SiftError::Internal(_)), "got {err:?}");
         m1.assert();
+    }
+
+    #[test]
+    fn cache_write_failure_warns_and_still_returns_rows() {
+        // Plant a file at the `cninfo` subdir so `atomic_write`'s
+        // `mkdir -p` fails — the cache write becomes unrecoverable
+        // without affecting the HTTP response. The fetch must still
+        // succeed and emit a warn line per failed endpoint.
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("cninfo"), b"in the way").unwrap();
+        let files = make_files(&tmp);
+
+        let mut server = mockito::Server::new();
+        let (m1, m2) = mock_ok(&mut server);
+
+        let (lists, warn) = call(SearchCacheOpts::default(), &files, &server).unwrap();
+        // Rows came back from the network despite cache failure.
+        assert_eq!(lists.cn_a[0].code, "600519");
+        assert_eq!(lists.hk[0].code, "00700");
+
+        let msg = String::from_utf8(warn).unwrap();
+        assert!(
+            msg.contains("[warn] cninfo szse_stock: cache write failed"),
+            "missing SZSE warn: {msg:?}",
+        );
+        assert!(
+            msg.contains("[warn] cninfo hke_stock: cache write failed"),
+            "missing HKE warn: {msg:?}",
+        );
+        m1.assert();
+        m2.assert();
     }
 
     #[test]

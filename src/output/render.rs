@@ -1,13 +1,23 @@
 use crate::error::SiftError;
+use crate::output::tabular::{render_tabular, TabularView};
 use serde::Serialize;
 use std::io::Write;
 use unicode_width::UnicodeWidthStr;
 
-/// A single renderable row.
+/// A single renderable row for commands whose schema is known at
+/// compile time (the bulk of sift today: `search`, `announce types`,
+/// `announce list/show/download`).
 ///
 /// - `headers()` provides the header row for table / tsv rendering;
 /// - `cells()` provides the body cells for table / tsv (order must match headers);
 /// - `Serialize` drives `serde_json::to_writer` for the ndjson renderer.
+///
+/// The TSV path bridges through [`crate::output::tabular::TabularView`]
+/// so the project-wide `#col1\tcol2\t…` header convention is the
+/// single source of truth — `render_tsv` itself doesn't hand-roll
+/// bytes. Dynamic-schema commands (financials) implement
+/// `TabularView` directly; this trait is the static-schema
+/// convenience layer.
 pub trait RenderRow: Serialize {
     fn headers() -> &'static [&'static str];
     fn cells(&self) -> Vec<String>;
@@ -23,7 +33,7 @@ pub fn render<W: Write, R: RenderRow>(
     match fmt {
         super::Format::Table => render_table(out, rows),
         super::Format::Tsv => render_tsv(out, rows),
-        super::Format::Ndjson => render_ndjson(out, rows),
+        super::Format::Json => render_ndjson(out, rows),
     }
 }
 
@@ -82,20 +92,26 @@ where
 }
 
 fn render_tsv<W: Write, R: RenderRow>(out: &mut W, rows: &[R]) -> Result<(), SiftError> {
-    let headers = R::headers();
-    writeln!(out, "{}", headers.join("\t")).map_err(io_err)?;
-    for row in rows {
-        let cells = row.cells();
-        for c in &cells {
-            if c.contains('\t') || c.contains('\n') {
-                return Err(SiftError::Internal(
-                    "tsv: control char in cell".into(),
-                ));
-            }
-        }
-        writeln!(out, "{}", cells.join("\t")).map_err(io_err)?;
+    // Bridge: a static-schema RenderRow slice → TabularView so the
+    // project-wide `#col1\tcol2\t…` convention (and its control-char
+    // policy) lives in exactly one byte emitter — `render_tabular`.
+    render_tabular(out, &RenderRowsView { rows })
+}
+
+/// Adapter that lets any `&[R: RenderRow]` look like a [`TabularView`].
+/// Lifetime is tied to the borrowed slice; no allocation beyond what
+/// `cells()` already produces.
+struct RenderRowsView<'a, R: RenderRow> {
+    rows: &'a [R],
+}
+
+impl<R: RenderRow> TabularView for RenderRowsView<'_, R> {
+    fn columns(&self) -> Vec<&str> {
+        R::headers().to_vec()
     }
-    Ok(())
+    fn rows(&self) -> Vec<Vec<String>> {
+        self.rows.iter().map(|r| r.cells()).collect()
+    }
 }
 
 fn render_ndjson<W: Write, R: RenderRow>(out: &mut W, rows: &[R]) -> Result<(), SiftError> {
@@ -172,18 +188,22 @@ mod tests {
     }
 
     #[test]
-    fn tsv_uses_tab_separator_with_header() {
+    fn tsv_header_uses_hash_prefix_and_tab_separator() {
+        // RenderRow → TabularView bridge: line 1 is the canonical
+        // `#col1\tcol2\t…` header. Data lines unchanged.
         let mut buf = Vec::<u8>::new();
         render_tsv(&mut buf, &sample()).unwrap();
         let s = String::from_utf8(buf).unwrap();
         let lines: Vec<&str> = s.lines().collect();
-        assert_eq!(lines[0], "a\tb\tc");
+        assert_eq!(lines[0], "#a\tb\tc");
         assert_eq!(lines[1], "1\tlong\tx");
         assert_eq!(lines[2], "22\ta\tyy");
     }
 
     #[test]
     fn tsv_rejects_tab_inside_cell() {
+        // The control-char rejection now lives in `render_tabular`;
+        // the error message reflects that origin.
         let bad = vec![Row {
             a: "ok".into(),
             b: "has\ttab".into(),
@@ -192,7 +212,9 @@ mod tests {
         let mut buf = Vec::<u8>::new();
         let err = render_tsv(&mut buf, &bad).unwrap_err();
         match err {
-            SiftError::Internal(m) => assert!(m.contains("tsv"), "msg: {m}"),
+            SiftError::Internal(m) => {
+                assert!(m.contains("control char"), "msg: {m}");
+            }
             other => panic!("expected Internal, got {other:?}"),
         }
     }
@@ -205,7 +227,10 @@ mod tests {
             c: "x".into(),
         }];
         let mut buf = Vec::<u8>::new();
-        assert!(matches!(render_tsv(&mut buf, &bad), Err(SiftError::Internal(_))));
+        assert!(matches!(
+            render_tsv(&mut buf, &bad),
+            Err(SiftError::Internal(_))
+        ));
     }
 
     #[test]
@@ -240,7 +265,7 @@ mod tests {
         for fmt in [
             super::super::Format::Table,
             super::super::Format::Tsv,
-            super::super::Format::Ndjson,
+            super::super::Format::Json,
         ] {
             let mut buf = Vec::<u8>::new();
             render(&mut buf, fmt, &sample()).unwrap();

@@ -24,17 +24,11 @@ pub enum SiftError {
     /// Every applicable source either errored or panicked. Carries one
     /// `(name, message)` per source so the user can see which upstream
     /// broke and how. Exit code 3 (network category).
-    ///
-    /// Constructed by [`crate::sources::financial_source::dispatch`]
-    /// once Story 05 wires it through; until then this variant is only
-    /// touched by the dispatcher's unit tests.
-    #[allow(dead_code)]
     #[error("all sources failed:\n{}", format_source_failures(.0))]
     AllSourcesFailed(Vec<(String, String)>),
     /// No registered source supports this query (e.g. `--scope parent`
     /// on a non-A-share market). Distinct from `AllSourcesFailed` so
     /// the user knows the request was never even attempted.
-    #[allow(dead_code)]
     #[error("no applicable source for {0}")]
     NoApplicableSource(String),
     /// User-supplied symbol is not in the cninfo listings cache (and
@@ -43,7 +37,6 @@ pub enum SiftError {
     /// this is "we know the cninfo universe and your code is not in
     /// it". Exit code 1 — the data source is healthy, the input just
     /// does not correspond to a known issuer.
-    #[allow(dead_code)]
     #[error("symbol {0:?} not in cninfo listings; check the code or wait for the list refresh")]
     MissingOrgId(String),
 }

@@ -76,8 +76,9 @@ fn tsv_format_emits_tab_separated_rows() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(!lines.is_empty(), "stdout empty");
-    // Header: 6 columns (5 tabs).
-    assert_eq!(lines[0], "code\tname\tmarket\tboard\tcategory\torgId");
+    // Header: canonical `#col1\tcol2\t…` per the project-wide
+    // `TabularView` convention. 6 columns → 5 tabs on every line.
+    assert_eq!(lines[0], "#code\tname\tmarket\tboard\tcategory\torgId");
     for (i, line) in lines.iter().enumerate() {
         assert_eq!(
             line.matches('\t').count(),

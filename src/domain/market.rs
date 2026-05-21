@@ -88,20 +88,6 @@ pub fn infer_board(code: &str) -> Option<Board> {
     })
 }
 
-/// EM (eastmoney) `secid` prefix lookup, kept here so the F5 quote
-/// command does not need to re-derive the SH-vs-SZ split. Returns the
-/// literal prefix including the trailing dot, e.g. `"1."` or `"116."`.
-pub fn em_secid_prefix(market: Market, board: Option<Board>) -> &'static str {
-    match (market, board) {
-        (Market::CnA, Some(Board::ShMain | Board::ShStar | Board::BShare)) => "1.",
-        (Market::CnA, _) => "0.",
-        (Market::Hk, _) => "116.",
-        // EM uses 105/106/107 for US (NASDAQ/NYSE/AMEX). F5 quote will
-        // refine this; for F2 financials the secid is not consulted.
-        (Market::Us, _) => "106.",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,18 +160,4 @@ mod tests {
         assert_eq!(infer_board("12"), None);
     }
 
-    #[test]
-    fn em_secid_prefix_table() {
-        assert_eq!(em_secid_prefix(Market::CnA, Some(Board::ShMain)), "1.");
-        assert_eq!(em_secid_prefix(Market::CnA, Some(Board::ShStar)), "1.");
-        assert_eq!(em_secid_prefix(Market::CnA, Some(Board::BShare)), "1.");
-        assert_eq!(em_secid_prefix(Market::CnA, Some(Board::SzMain)), "0.");
-        assert_eq!(em_secid_prefix(Market::CnA, Some(Board::SzSme)), "0.");
-        assert_eq!(em_secid_prefix(Market::CnA, Some(Board::SzGem)), "0.");
-        assert_eq!(em_secid_prefix(Market::CnA, Some(Board::BjMain)), "0.");
-        assert_eq!(em_secid_prefix(Market::CnA, None), "0.");
-        assert_eq!(em_secid_prefix(Market::Hk, None), "116.");
-        assert_eq!(em_secid_prefix(Market::Hk, Some(Board::ShMain)), "116.");
-        assert_eq!(em_secid_prefix(Market::Us, None), "106.");
-    }
 }

@@ -1,7 +1,5 @@
 //! `sift financials {income | balance | cashflow | indicator | periods}`.
 
-#![allow(dead_code)]
-
 use std::collections::BTreeSet;
 
 use clap::{Args, Subcommand, ValueEnum};

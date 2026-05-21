@@ -9,7 +9,6 @@
 //! flags or config-file knobs.
 
 use crate::error::SiftError;
-use std::io::Read;
 use std::time::Duration;
 
 const UA: &str = concat!("sift/", env!("CARGO_PKG_VERSION"));
@@ -40,12 +39,25 @@ pub struct HttpClient {
 
 impl HttpClient {
     pub fn new() -> Self {
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(CONNECT_TIMEOUT)
-            .timeout_read(READ_TIMEOUT)
+        // ureq 3 builds the `Agent` from a `Config`; the timeouts now
+        // split between `connect` (TCP/TLS handshake) and
+        // `recv_response` (headers) + `recv_body` (body). We give the
+        // same 30 s budget to both response phases for parity with
+        // ureq 2's single `timeout_read` knob.
+        let config = ureq::Agent::config_builder()
             .user_agent(UA)
+            .timeout_connect(Some(CONNECT_TIMEOUT))
+            .timeout_recv_response(Some(READ_TIMEOUT))
+            .timeout_recv_body(Some(READ_TIMEOUT))
+            // ureq 3 surfaces non-2xx status codes as Ok(response) by
+            // default and lets the caller decide; we keep that
+            // behaviour explicit so the retry loop can inspect the
+            // status without unwrapping an error variant.
+            .http_status_as_error(false)
             .build();
-        Self { agent }
+        Self {
+            agent: config.into(),
+        }
     }
 
     /// GET with automatic retries. Returns the raw response body bytes;
@@ -58,13 +70,7 @@ impl HttpClient {
     /// not stack them. The header still counts against the retry
     /// budget.
     pub fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SiftError> {
-        // The closure returns `Result<Response, ureq::Error>`; clippy
-        // flags the `Err` size (~272 B, dominated by ureq's enum)
-        // but the box-it-up workaround would only relocate the cost.
-        // Allow locally since the loop runs ≤4 times.
-        #[allow(clippy::result_large_err)]
-        let r = || self.agent.get(url).call();
-        self.with_retries("GET", url, r)
+        self.with_retries("GET", url, || self.agent.get(url).call())
     }
 
     /// POST `application/x-www-form-urlencoded`. Body is the
@@ -72,9 +78,13 @@ impl HttpClient {
     /// Shares the retry / `Retry-After` / 16 MiB body cap behaviour
     /// with [`HttpClient::get_bytes`].
     pub fn post_form(&self, url: &str, form: &[(&str, &str)]) -> Result<Vec<u8>, SiftError> {
-        #[allow(clippy::result_large_err)]
-        let r = || self.agent.post(url).send_form(form);
-        self.with_retries("POST", url, r)
+        // ureq 3 `send_form` expects `IntoIterator<Item = (impl AsRef<str>, impl AsRef<str>)>`;
+        // `&[(&str, &str)]` iterates as `&(&str, &str)` so we copy the
+        // tuple to get an owning `(&str, &str)` iterator. The lifetimes
+        // are tied to `form` which outlives this expression.
+        self.with_retries("POST", url, || {
+            self.agent.post(url).send_form(form.iter().copied())
+        })
     }
 
     /// Shared retry / body-read loop for every HTTP verb. The
@@ -82,6 +92,12 @@ impl HttpClient {
     /// payload, for POST) to send on each attempt; everything else —
     /// retry codes, backoff sequence, `Retry-After` parsing, body
     /// cap — is handled once here.
+    ///
+    /// In ureq 3 every non-transport response (4xx, 5xx) arrives as
+    /// `Ok(Response)` because we set `http_status_as_error(false)` —
+    /// the loop classifies by `resp.status()` instead of by error
+    /// variant, which is more uniform than ureq 2's
+    /// `Error::Status(code, resp)`.
     fn with_retries<F>(
         &self,
         verb: &str,
@@ -89,7 +105,7 @@ impl HttpClient {
         mut request: F,
     ) -> Result<Vec<u8>, SiftError>
     where
-        F: FnMut() -> Result<ureq::Response, ureq::Error>,
+        F: FnMut() -> Result<ureq::http::Response<ureq::Body>, ureq::Error>,
     {
         let mut last_err: Option<SiftError> = None;
         // One initial attempt plus `BACKOFF_SECS.len()` retries. The
@@ -99,17 +115,21 @@ impl HttpClient {
         // `attempt` index that's one larger than the slice.
         for attempt in 0..=BACKOFF_SECS.len() {
             match request() {
-                Ok(resp) => return read_body(resp),
-                Err(ureq::Error::Status(code, resp)) if RETRY_CODES.contains(&code) => {
-                    last_err = Some(SiftError::Network(format!("{verb} {url} -> {code}")));
-                    if let Some(&base_wait) = BACKOFF_SECS.get(attempt) {
-                        let wait = retry_after_secs(&resp).unwrap_or(base_wait);
-                        if wait > 0 {
-                            std::thread::sleep(Duration::from_secs(wait));
-                        }
+                Ok(resp) => {
+                    let code = resp.status().as_u16();
+                    if (200..300).contains(&code) {
+                        return read_body(resp);
                     }
-                }
-                Err(ureq::Error::Status(code, _)) => {
+                    if RETRY_CODES.contains(&code) {
+                        last_err = Some(SiftError::Network(format!("{verb} {url} -> {code}")));
+                        if let Some(&base_wait) = BACKOFF_SECS.get(attempt) {
+                            let wait = retry_after_secs(&resp).unwrap_or(base_wait);
+                            if wait > 0 {
+                                std::thread::sleep(Duration::from_secs(wait));
+                            }
+                        }
+                        continue;
+                    }
                     return Err(SiftError::Network(format!("{verb} {url} -> {code}")));
                 }
                 Err(e) => return Err(SiftError::Network(e.to_string())),
@@ -125,25 +145,35 @@ impl Default for HttpClient {
     }
 }
 
-fn retry_after_secs(resp: &ureq::Response) -> Option<u64> {
-    resp.header("Retry-After")?.trim().parse().ok()
+fn retry_after_secs(resp: &ureq::http::Response<ureq::Body>) -> Option<u64> {
+    resp.headers()
+        .get("retry-after")?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
-/// Drain the response body with a `MAX_BODY_BYTES` cap. Reading one
-/// extra byte lets us distinguish "exactly at cap" (OK) from "over the
-/// cap" (error) without trusting `Content-Length`.
-fn read_body(resp: ureq::Response) -> Result<Vec<u8>, SiftError> {
-    let mut buf = Vec::new();
-    resp.into_reader()
-        .take(MAX_BODY_BYTES as u64 + 1)
-        .read_to_end(&mut buf)
+/// Drain the response body with a `MAX_BODY_BYTES` cap. ureq 3's
+/// `Body::read_to_vec` takes care of the buffer; we layer the cap via
+/// the configurable `Body::with_config().limit(...)` reader so an
+/// oversized response is reported rather than truncated silently.
+fn read_body(resp: ureq::http::Response<ureq::Body>) -> Result<Vec<u8>, SiftError> {
+    let mut body = resp.into_body();
+    // Read up to `MAX + 1` so we can distinguish "exactly at cap" (OK)
+    // from "over the cap" (error) without trusting `Content-Length`.
+    let bytes = body
+        .with_config()
+        .limit((MAX_BODY_BYTES + 1) as u64)
+        .read_to_vec()
         .map_err(|e| SiftError::Network(format!("body read: {e}")))?;
-    if buf.len() > MAX_BODY_BYTES {
+    if bytes.len() > MAX_BODY_BYTES {
         return Err(SiftError::Network(format!(
             "response body exceeds {MAX_BODY_BYTES} bytes"
         )));
     }
-    Ok(buf)
+    Ok(bytes)
 }
 
 #[cfg(test)]

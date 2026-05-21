@@ -24,8 +24,6 @@
 //! for the end-of-run hint via
 //! [`crate::domain::items_dict::record_unmapped`].
 
-#![allow(dead_code)]
-
 pub mod a_three;
 pub mod hk_three;
 pub mod indicator;
@@ -88,8 +86,11 @@ impl EastmoneyFinancialSource {
         }
     }
 
-    /// Construct with explicit URLs. Used by unit tests pointing at
-    /// mockito; not part of the public `build()` factory.
+    /// Construct with explicit URLs. Test-only seam pointing at
+    /// mockito; production goes through [`Self::new`] which reads
+    /// the env-resolved defaults. `#[cfg(test)]` keeps the symbol
+    /// out of release binaries and out of dead-code lints.
+    #[cfg(test)]
     pub fn with_urls(hsf10_base: impl Into<String>, datacenter_base: impl Into<String>) -> Self {
         Self {
             urls: EmUrls {

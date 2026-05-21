@@ -10,6 +10,8 @@
 //! the period-end literal; [`Period::from_date_type_code`] folds those
 //! back into the same enum so downstream code sees one shape.
 
+use std::str::FromStr;
+
 use time::{Date, Month};
 
 use crate::error::SiftError;
@@ -66,6 +68,19 @@ impl PeriodType {
             (3, 31) => Some(Self::Q1),
             (9, 30) => Some(Self::Q3),
             _ => None,
+        }
+    }
+}
+
+impl FromStr for PeriodType {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "annual" => Ok(Self::Annual),
+            "h1" => Ok(Self::H1),
+            "q1" => Ok(Self::Q1),
+            "q3" => Ok(Self::Q3),
+            _ => Err(()),
         }
     }
 }
@@ -383,5 +398,18 @@ mod tests {
         for w in p.windows(2) {
             assert!(w[0].end_date() > w[1].end_date(), "{:?}", p);
         }
+    }
+
+    #[test]
+    fn period_type_from_str_round_trips_through_as_str() {
+        for &v in &[
+            PeriodType::Annual,
+            PeriodType::H1,
+            PeriodType::Q1,
+            PeriodType::Q3,
+        ] {
+            assert_eq!(v.as_str().parse::<PeriodType>(), Ok(v));
+        }
+        assert!("nope".parse::<PeriodType>().is_err());
     }
 }

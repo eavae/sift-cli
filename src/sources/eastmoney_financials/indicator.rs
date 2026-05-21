@@ -31,7 +31,7 @@ pub(crate) fn fetch_a(
     );
     let url = format!(
         "{base}?reportName=RPT_F10_FINANCE_MAINFINADATA&columns=ALL\
-         &filter=(SECUCODE=\"{secucode}\")\
+         &filter=(SECUCODE=%22{secucode}%22)\
          &source=HSF10&client=PC",
         base = src.urls().datacenter_base,
     );

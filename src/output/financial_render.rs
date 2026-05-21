@@ -18,8 +18,6 @@
 //! real financial line items. Multi-symbol output emits one block per
 //! symbol separated by a blank line.
 
-#![allow(dead_code)]
-
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
 
@@ -185,7 +183,7 @@ pub fn render<W: Write>(
     match fmt {
         Format::Table => render_table(out, table),
         Format::Tsv => render_tsv(out, table),
-        Format::Ndjson => render_ndjson(out, table),
+        Format::Json => render_ndjson(out, table),
     }
 }
 
@@ -801,7 +799,7 @@ mod tests {
         ];
         let t = pivot(rows, None, &empty_lookup());
         let mut buf = Vec::<u8>::new();
-        render(&mut buf, &t, Format::Ndjson).unwrap();
+        render(&mut buf, &t, Format::Json).unwrap();
         let parsed: Vec<serde_json::Value> = serde_json::Deserializer::from_slice(&buf)
             .into_iter::<serde_json::Value>()
             .collect::<Result<_, _>>()

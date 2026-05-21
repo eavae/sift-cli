@@ -19,7 +19,7 @@ fn main() {
     // are written to stderr and exited with code 2 by `parse()`; they do
     // **not** flow through `SiftError`.
     let cli = Cli::parse();
-    let fmt = output::Format::from_user(cli.format);
+    let fmt = cli.format.unwrap_or(output::Format::Table);
 
     let result: Result<(), SiftError> = match cli.command {
         Command::Search(args) => commands::search::run(args, fmt),

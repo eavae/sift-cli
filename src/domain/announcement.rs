@@ -11,8 +11,6 @@
 //! existing `zh` row) runs on first access — a malformed shipped JSON
 //! panics there.
 
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
@@ -26,20 +24,29 @@ const CATEGORIES_JSON: &str = include_str!("../../data/announcement_categories.j
 /// `"cninfo"`); kept as `&'static str` so the struct stays cheap to
 /// clone and we don't pay per-row allocation for constants. `date`
 /// serializes as `YYYY-MM-DD` via a custom `serialize_with` so we do
-/// not require the time crate's `serde` feature.
-#[derive(Debug, Clone, Serialize)]
+/// not require the time crate's `serde` feature. The `Deserialize`
+/// path (used by the record cache to revive a stored row) is paired
+/// with `deserialize_*` helpers that map any input to the canonical
+/// `&'static str` literals — keeping the in-memory representation
+/// allocation-free regardless of round-trip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnnouncementRow {
     pub id: String,
     pub symbol: String,
     pub name: String,
-    #[serde(serialize_with = "serialize_iso_date")]
+    #[serde(
+        serialize_with = "serialize_iso_date",
+        deserialize_with = "deserialize_iso_date"
+    )]
     pub date: time::Date,
     #[serde(rename = "type")]
     pub type_zh: String,
     pub title: String,
+    #[serde(skip_deserializing, default = "pdf_literal")]
     pub format: &'static str,
     pub size_kb: u32,
     pub url: String,
+    #[serde(skip_deserializing, default = "cninfo_literal")]
     pub source: &'static str,
 }
 
@@ -48,6 +55,26 @@ fn serialize_iso_date<S: serde::Serializer>(d: &time::Date, s: S) -> Result<S::O
         .format(&time::format_description::well_known::Iso8601::DATE)
         .map_err(serde::ser::Error::custom)?;
     s.serialize_str(&str_form)
+}
+
+fn deserialize_iso_date<'de, D: serde::Deserializer<'de>>(d: D) -> Result<time::Date, D::Error> {
+    let s = String::deserialize(d)?;
+    time::Date::parse(&s, &time::format_description::well_known::Iso8601::DATE)
+        .map_err(serde::de::Error::custom)
+}
+
+/// Default for `format` during deserialization. The field is
+/// `skip_deserializing`'d so any drift in the stored bytes is ignored
+/// and the canonical literal is restored; this also lets the field
+/// stay `&'static str` (a derived `Deserialize` would propagate a
+/// `'de: 'static` bound through the whole struct).
+fn pdf_literal() -> &'static str {
+    "pdf"
+}
+
+/// Mirror of [`pdf_literal`] for the `source` field.
+fn cninfo_literal() -> &'static str {
+    "cninfo"
 }
 
 impl crate::output::RenderRow for AnnouncementRow {
@@ -90,14 +117,6 @@ pub struct Category {
     pub category: Option<String>,
     #[serde(default)]
     pub aggregates: Option<Vec<String>>,
-}
-
-impl Category {
-    /// `true` for the local aggregate variant (no cninfo category,
-    /// just expands to other `zh` rows at query time).
-    pub fn is_aggregate(&self) -> bool {
-        self.aggregates.is_some()
-    }
 }
 
 /// The compiled-in dictionary. Lazily parsed + validated on first
@@ -216,6 +235,44 @@ mod tests {
     }
 
     #[test]
+    fn announcement_row_serde_round_trip_preserves_fields() {
+        // Round-trip via the record-cache path: serialize → bytes →
+        // deserialize → struct. `format`/`source` must come back as
+        // the canonical `&'static str` literals regardless of the
+        // serialized text.
+        let original = sample_row();
+        let bytes = serde_json::to_vec(&original).unwrap();
+        let restored: AnnouncementRow = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored.id, original.id);
+        assert_eq!(restored.symbol, original.symbol);
+        assert_eq!(restored.name, original.name);
+        assert_eq!(restored.date, original.date);
+        assert_eq!(restored.type_zh, original.type_zh);
+        assert_eq!(restored.title, original.title);
+        assert_eq!(restored.size_kb, original.size_kb);
+        assert_eq!(restored.url, original.url);
+        // Literal-mapped fields: storage byte-equality is a happy
+        // accident; the contract is the static-str identity.
+        assert_eq!(restored.format, "pdf");
+        assert_eq!(restored.source, "cninfo");
+    }
+
+    #[test]
+    fn deserialize_format_and_source_force_canonical_literals() {
+        // A drifted stored row (someone hand-edited the DB; a future
+        // schema migration left a stale value) must still come back
+        // as the canonical literals.
+        let drifted = r#"{
+            "id": "x", "symbol": "y", "name": "z", "date": "2024-01-01",
+            "type": "t", "title": "T", "format": "html", "size_kb": 0,
+            "url": "u", "source": "other-source"
+        }"#;
+        let row: AnnouncementRow = serde_json::from_str(drifted).unwrap();
+        assert_eq!(row.format, "pdf");
+        assert_eq!(row.source, "cninfo");
+    }
+
+    #[test]
     fn shipped_dict_has_27_entries_with_aggregate_last() {
         let cats = categories();
         assert_eq!(cats.len(), 27, "27 entries (26 official + 1 aggregate)");
@@ -225,7 +282,7 @@ mod tests {
         // Last entry is the local aggregate.
         let last = &cats[26];
         assert_eq!(last.zh, "定期报告");
-        assert!(last.is_aggregate());
+        assert!(last.aggregates.is_some(), "last entry should be the aggregate");
         let aggs = last.aggregates.as_ref().unwrap();
         assert_eq!(aggs.len(), 4);
         // Every aggregate target resolves via `lookup`.

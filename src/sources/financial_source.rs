@@ -23,13 +23,6 @@
 //! let rows = dispatch(&query, &Context::default())?;
 //! ```
 
-// Story 02 ships the trait + dispatcher as the seam every subsequent
-// F2 story (03 EM source, 04 sina source, 05 commands) plugs into; the
-// public surface here is unused inside the binary until Story 05 wires
-// it through `commands::financials`. Suppress dead-code warnings until
-// then so `cargo build` stays clean.
-#![allow(dead_code)]
-
 use std::sync::{mpsc, Arc, OnceLock};
 
 use crate::cache::financials::FinancialCache;
@@ -116,18 +109,12 @@ pub fn registry() -> &'static [Box<dyn FinancialSource>] {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-/// Production entry. Runs every applicable registered source in
-/// parallel and returns the first `Ok`. See the module-level docs for
-/// failure semantics.
-pub fn dispatch(query: &Query, ctx: &Context) -> Result<Vec<FinancialRow>, SiftError> {
-    let sources: Vec<&dyn FinancialSource> =
-        registry().iter().map(|b| b.as_ref()).collect();
-    dispatch_against(query, ctx, &sources)
-}
-
-/// Lower-level entry: dispatch against an explicit slice of sources.
-/// Used both by [`dispatch`] (passing the global registry) and by
-/// tests (passing mocks without touching the `OnceLock`).
+/// Lower-level entry without caching. Production goes through the
+/// cache-aware wrappers ([`dispatch_with_cache`] /
+/// [`dispatch_with_cache_named`]); this seam exists so tests can pass
+/// mock sources without touching the `OnceLock` registry. `cfg(test)`
+/// keeps it out of release binaries.
+#[cfg(test)]
 pub fn dispatch_against(
     query: &Query,
     ctx: &Context,

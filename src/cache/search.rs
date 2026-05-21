@@ -14,9 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::domain::market::Market;
 use crate::error::SiftError;
 use crate::http::HttpClient;
-use crate::sources::cninfo::{self, CnInfoRow, StockLists};
-
-const DEFAULT_BASE: &str = "https://www.cninfo.com.cn";
+use crate::sources::cninfo::{self, cninfo_base, CnInfoRow, StockLists};
 
 /// One cninfo endpoint: HTTP path + cache file name + label for
 /// messaging. The three live together so adding a third endpoint is a
@@ -41,14 +39,6 @@ const HKE: EndpointSpec = EndpointSpec {
     cache_file: "hke_stock.json",
     label: "hke_stock",
 };
-
-/// Resolve the cninfo base URL. The `SIFT_CNINFO_BASE` env var is a
-/// test-only seam: integration tests under `tests/search_e2e.rs` point
-/// it at a mockito server. End users never set it; the F1 README
-/// intentionally does not document it.
-fn cninfo_base() -> String {
-    std::env::var("SIFT_CNINFO_BASE").unwrap_or_else(|_| DEFAULT_BASE.into())
-}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SearchCacheOpts {
@@ -442,5 +432,35 @@ mod tests {
         let new_content = fs::read_to_string(root.join("szse_stock.json")).unwrap();
         assert!(new_content.contains("600519"));
         m1.assert();
+    }
+
+    #[test]
+    fn load_cached_org_ids_reads_both_szse_and_hke_files() {
+        let tmp = TempDir::new().unwrap();
+        let cninfo_dir = tmp.path().join("cninfo");
+        fs::create_dir_all(&cninfo_dir).unwrap();
+        fs::write(
+            cninfo_dir.join("szse_stock.json"),
+            r#"{"stockList":[{"code":"600519","zwjc":"贵州茅台","pinyin":"gzmt","category":"A股","orgId":"gssh0600519"}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            cninfo_dir.join("hke_stock.json"),
+            r#"{"stockList":[{"code":"00700","zwjc":"腾讯","pinyin":"tx","category":"港股","orgId":"gshk0000700"}]}"#,
+        )
+        .unwrap();
+        let mut map: HashMap<String, (Market, String)> = HashMap::new();
+        load_cached_org_ids_at(&cninfo_dir, &mut map);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["600519"], (Market::CnA, "gssh0600519".into()));
+        assert_eq!(map["00700"], (Market::Hk, "gshk0000700".into()));
+    }
+
+    #[test]
+    fn load_cached_org_ids_returns_empty_when_no_files() {
+        let tmp = TempDir::new().unwrap();
+        let mut map: HashMap<String, (Market, String)> = HashMap::new();
+        load_cached_org_ids_at(&tmp.path().join("cninfo"), &mut map);
+        assert!(map.is_empty());
     }
 }

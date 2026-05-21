@@ -9,44 +9,51 @@
 //!
 //! Reads consult [`crate::cache::ttl`] to skip stale rows; writes are
 //! always upserts (never deleted).
+//!
+//! ## DuckDB access discipline
+//! Every SQL call routes through [`crate::cache::with_duckdb`]: the
+//! struct stores only the path, never a long-lived `Connection`. This
+//! is what lets two concurrent `sift financials` processes share the
+//! same file — see the module docs of [`crate::cache`] for the full
+//! invariant.
 
-#![allow(dead_code)]
+mod stored;
 
-use std::path::Path;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::{Date, OffsetDateTime};
 
-use crate::cache::ttl;
+use self::stored::StoredRow;
+use crate::cache::{ttl, with_duckdb, DuckAccess};
 use crate::domain::market::Market;
-use crate::domain::{
-    AuditStatus, FinancialRow, Period, PeriodType, Scope, SourceTag, Statement, Symbol, Unit,
-};
+use crate::domain::{FinancialRow, Period, PeriodType, Scope, SourceTag, Statement, Symbol};
 use crate::error::SiftError;
 
-/// On-disk financial cache. Opens / creates the `financials` table
-/// lazily in [`FinancialCache::open`]; concurrent access goes through
-/// a `Mutex` because the duckdb connection itself is not `Sync`.
+/// On-disk financial cache. Lightweight — only the path; every SQL
+/// call opens a fresh DuckDB connection via
+/// [`crate::cache::with_duckdb`] and drops it immediately. `Send +
+/// Sync` without interior locking; cross-process contention is
+/// handled by the retry ladder inside `with_duckdb`.
 pub struct FinancialCache {
-    conn: Mutex<duckdb::Connection>,
+    db_path: PathBuf,
 }
 
 impl FinancialCache {
     /// Open (or create) the cache at `path`. Idempotent — the schema
-    /// is set up via `CREATE TABLE IF NOT EXISTS`.
+    /// is set up via `CREATE TABLE IF NOT EXISTS` and the connection
+    /// is released as soon as `with_duckdb` returns.
     pub fn open(path: &Path) -> Result<Self, SiftError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| SiftError::Io(format!("mkdir {}: {e}", parent.display())))?;
         }
-        let conn = duckdb::Connection::open(path)
-            .map_err(|e| SiftError::Io(format!("duckdb open {}: {e}", path.display())))?;
-        conn.execute_batch(SCHEMA_SQL)
-            .map_err(|e| SiftError::Io(format!("duckdb schema: {e}")))?;
+        with_duckdb(path, DuckAccess::Write, |conn| {
+            conn.execute_batch(SCHEMA_SQL)
+                .map_err(|e| SiftError::Io(format!("duckdb schema: {e}")))
+        })?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            db_path: path.to_path_buf(),
         })
     }
 
@@ -65,18 +72,22 @@ impl FinancialCache {
         let key = cache_key(sym, stmt, period, scope, source);
         let bucket = ttl::bucket_for(period.end_date(), today);
 
-        let conn = self.conn.lock().ok()?;
-        let mut stmt_q = conn
-            .prepare("SELECT rows_json, fetched_at FROM financials WHERE key = ?")
-            .ok()?;
-        let mut iter = stmt_q
-            .query_map([&key as &dyn duckdb::ToSql], |row| {
-                let blob: Vec<u8> = row.get(0)?;
-                let fetched_at_s: String = row.get(1)?;
-                Ok((blob, fetched_at_s))
-            })
-            .ok()?;
-        let (blob, fetched_at_s) = iter.next()?.ok()?;
+        let blob_and_ts = with_duckdb(&self.db_path, DuckAccess::Read, |conn| {
+            let mut stmt_q = conn
+                .prepare("SELECT rows_json, fetched_at FROM financials WHERE key = ?")
+                .map_err(|e| SiftError::Io(format!("{e}")))?;
+            let mut iter = stmt_q
+                .query_map([&key as &dyn duckdb::ToSql], |row| {
+                    let blob: Vec<u8> = row.get(0)?;
+                    let fetched_at_s: String = row.get(1)?;
+                    Ok((blob, fetched_at_s))
+                })
+                .map_err(|e| SiftError::Io(format!("{e}")))?;
+            Ok(iter.next().and_then(Result::ok))
+        })
+        .ok()
+        .flatten()?;
+        let (blob, fetched_at_s) = blob_and_ts;
         let fetched_at = OffsetDateTime::parse(&fetched_at_s, &Rfc3339).ok()?;
         if !ttl::is_fresh(fetched_at, bucket) {
             return None;
@@ -110,19 +121,13 @@ impl FinancialCache {
         if rows.is_empty() {
             return Ok(());
         }
-        let mut conn = self
-            .conn
-            .lock()
-            .map_err(|e| SiftError::Internal(format!("financial cache lock: {e}")))?;
-        let tx = conn
-            .transaction()
-            .map_err(|e| SiftError::Io(format!("duckdb tx: {e}")))?;
-
         let now = OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .unwrap_or_default();
 
-        // Group rows by (symbol, period, statement, scope).
+        // Group rows by (symbol, period, statement, scope) outside
+        // the DB call so the connection holds the lock for the SQL
+        // pass only, not the grouping pass.
         use std::collections::BTreeMap;
         let mut groups: BTreeMap<GroupKey, Vec<&FinancialRow>> = BTreeMap::new();
         for r in rows {
@@ -139,48 +144,59 @@ impl FinancialCache {
             groups.entry(key).or_default().push(r);
         }
 
-        for (gkey, group) in groups {
-            let sym = Symbol {
-                code: gkey.symbol_code.clone(),
-                market: market_from_u8(gkey.market),
-            };
-            let period = parse_period_from_iso(&gkey.period)?;
-            let key = cache_key(&sym, gkey.statement, period, gkey.scope, source);
-            let period_end = period.end_date();
-            let period_type = period.period_type().unwrap_or(PeriodType::Annual);
-            let publish_date = group
-                .iter()
-                .find_map(|r| r.publish_date)
-                .map(|d| d.format(&time::format_description::well_known::Iso8601::DATE).unwrap_or_default());
+        with_duckdb(&self.db_path, DuckAccess::Write, |conn| {
+            // `unchecked_transaction` takes `&Connection` so it
+            // composes with `with_duckdb`'s `&Connection` closure
+            // argument; `Connection::transaction` would need `&mut`
+            // and isn't reachable from here.
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| SiftError::Io(format!("duckdb tx: {e}")))?;
+            for (gkey, group) in &groups {
+                let sym = Symbol {
+                    code: gkey.symbol_code.clone(),
+                    market: market_from_u8(gkey.market),
+                };
+                let period = parse_period_from_iso(&gkey.period)?;
+                let key = cache_key(&sym, gkey.statement, period, gkey.scope, source);
+                let period_end = period.end_date();
+                let period_type = period.period_type().unwrap_or(PeriodType::Annual);
+                let publish_date = group
+                    .iter()
+                    .find_map(|r| r.publish_date)
+                    .map(|d| {
+                        d.format(&time::format_description::well_known::Iso8601::DATE)
+                            .unwrap_or_default()
+                    });
 
-            let stored: Vec<StoredRow> =
-                group.iter().map(|r| StoredRow::from_row(r)).collect();
-            let json =
-                serde_json::to_vec(&stored).map_err(|e| SiftError::Internal(format!("json: {e}")))?;
+                let stored: Vec<StoredRow> =
+                    group.iter().map(|r| StoredRow::from_row(r)).collect();
+                let json = serde_json::to_vec(&stored)
+                    .map_err(|e| SiftError::Internal(format!("json: {e}")))?;
 
-            tx.execute(
-                INSERT_SQL,
-                duckdb::params![
-                    &key,
-                    &sym.code,
-                    gkey.statement.as_str(),
-                    period_end
-                        .format(&time::format_description::well_known::Iso8601::DATE)
-                        .unwrap_or_default(),
-                    period_type.as_str(),
-                    gkey.scope.as_str(),
-                    source.as_str(),
-                    &json,
-                    &now,
-                    publish_date,
-                ],
-            )
-            .map_err(|e| SiftError::Io(format!("duckdb insert: {e}")))?;
-        }
-
-        tx.commit()
-            .map_err(|e| SiftError::Io(format!("duckdb commit: {e}")))?;
-        Ok(())
+                tx.execute(
+                    INSERT_SQL,
+                    duckdb::params![
+                        &key,
+                        &sym.code,
+                        gkey.statement.as_str(),
+                        period_end
+                            .format(&time::format_description::well_known::Iso8601::DATE)
+                            .unwrap_or_default(),
+                        period_type.as_str(),
+                        gkey.scope.as_str(),
+                        source.as_str(),
+                        &json,
+                        &now,
+                        publish_date,
+                    ],
+                )
+                .map_err(|e| SiftError::Io(format!("duckdb insert: {e}")))?;
+            }
+            tx.commit()
+                .map_err(|e| SiftError::Io(format!("duckdb commit: {e}")))?;
+            Ok(())
+        })
     }
 
     /// Test helper: overwrite the `fetched_at` of any row with the
@@ -198,22 +214,33 @@ impl FinancialCache {
     ) -> Result<(), SiftError> {
         let key = cache_key(sym, stmt, period, scope, source);
         let when_s = when.format(&Rfc3339).unwrap_or_default();
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE financials SET fetched_at = ? WHERE key = ?",
-            duckdb::params![&when_s, &key],
-        )
-        .map_err(|e| SiftError::Io(format!("duckdb update: {e}")))?;
-        Ok(())
+        with_duckdb(&self.db_path, DuckAccess::Write, |conn| {
+            conn.execute(
+                "UPDATE financials SET fetched_at = ? WHERE key = ?",
+                duckdb::params![&when_s, &key],
+            )
+            .map_err(|e| SiftError::Io(format!("duckdb update: {e}")))?;
+            Ok(())
+        })
     }
 
     /// Test helper: total row count in the table.
     #[cfg(test)]
     pub(crate) fn row_count(&self) -> usize {
-        let conn = self.conn.lock().unwrap();
-        let mut s = conn.prepare("SELECT COUNT(*) FROM financials").unwrap();
-        let mut iter = s.query_map([], |r| r.get::<usize, i64>(0)).unwrap();
-        iter.next().unwrap().unwrap() as usize
+        with_duckdb(&self.db_path, DuckAccess::Read, |conn| {
+            let mut s = conn
+                .prepare("SELECT COUNT(*) FROM financials")
+                .map_err(|e| SiftError::Io(format!("{e}")))?;
+            let mut iter = s
+                .query_map([], |r| r.get::<usize, i64>(0))
+                .map_err(|e| SiftError::Io(format!("{e}")))?;
+            let n = iter
+                .next()
+                .and_then(Result::ok)
+                .unwrap_or(0) as usize;
+            Ok(n)
+        })
+        .unwrap_or(0)
     }
 }
 
@@ -292,7 +319,7 @@ fn parse_period_from_iso(s: &str) -> Result<Period, SiftError> {
     Period::parse(head)
 }
 
-fn market_from_u8(b: u8) -> Market {
+pub(super) fn market_from_u8(b: u8) -> Market {
     match b {
         0 => Market::CnA,
         1 => Market::Hk,
@@ -303,135 +330,13 @@ fn market_from_u8(b: u8) -> Market {
 
 
 // ---------------------------------------------------------------------------
-// Stored row layout
-// ---------------------------------------------------------------------------
-
-/// JSON-friendly serialization of `FinancialRow`. We do not derive
-/// Serialize on `FinancialRow` directly because the production
-/// `--format json` output uses a different shape; this is purely the
-/// cache's storage format.
-#[derive(Debug, Serialize, Deserialize)]
-struct StoredRow {
-    symbol_code: String,
-    symbol_market: u8,
-    name: String,
-    period: String,        // YYYY-MM-DD
-    period_type: String,
-    statement: String,
-    scope: String,
-    item: String,
-    value: f64,
-    unit: String,
-    currency: String,
-    publish_date: Option<String>,
-    audit: String,
-    source: String,
-}
-
-impl StoredRow {
-    fn from_row(r: &FinancialRow) -> Self {
-        Self {
-            symbol_code: r.symbol.code.clone(),
-            symbol_market: r.symbol.market as u8,
-            name: r.name.clone(),
-            period: r
-                .period
-                .format(&time::format_description::well_known::Iso8601::DATE)
-                .unwrap_or_default(),
-            period_type: r.period_type.as_str().into(),
-            statement: r.statement.as_str().into(),
-            scope: r.scope.as_str().into(),
-            item: r.item.clone(),
-            value: r.value,
-            unit: r.unit.as_str().into(),
-            currency: r.currency.clone(),
-            publish_date: r
-                .publish_date
-                .map(|d| d.format(&time::format_description::well_known::Iso8601::DATE).unwrap_or_default()),
-            audit: r.audit.as_str().into(),
-            source: r.source.as_str().into(),
-        }
-    }
-
-    fn into_row(self) -> FinancialRow {
-        FinancialRow {
-            symbol: Symbol {
-                code: self.symbol_code,
-                market: market_from_u8(self.symbol_market),
-            },
-            name: self.name,
-            period: parse_date(&self.period).unwrap_or(epoch_date()),
-            period_type: period_type_from_str(&self.period_type),
-            statement: statement_from_str(&self.statement),
-            scope: scope_from_str(&self.scope),
-            item: self.item,
-            value: self.value,
-            unit: unit_from_str(&self.unit),
-            currency: self.currency,
-            publish_date: self.publish_date.as_deref().and_then(parse_date),
-            audit: audit_from_str(&self.audit),
-            source: SourceTag::from_name(&self.source).unwrap_or(SourceTag::EastMoney),
-        }
-    }
-}
-
-fn parse_date(s: &str) -> Option<Date> {
-    let mut parts = s.split('-');
-    let y: i32 = parts.next()?.parse().ok()?;
-    let m: u8 = parts.next()?.parse().ok()?;
-    let d: u8 = parts.next()?.parse().ok()?;
-    Date::from_calendar_date(y, time::Month::try_from(m).ok()?, d).ok()
-}
-
-fn epoch_date() -> Date {
-    Date::from_calendar_date(1970, time::Month::January, 1).unwrap()
-}
-
-fn period_type_from_str(s: &str) -> PeriodType {
-    match s {
-        "annual" => PeriodType::Annual,
-        "h1" => PeriodType::H1,
-        "q1" => PeriodType::Q1,
-        "q3" => PeriodType::Q3,
-        _ => PeriodType::Annual,
-    }
-}
-fn statement_from_str(s: &str) -> Statement {
-    match s {
-        "balance" => Statement::Balance,
-        "cashflow" => Statement::Cashflow,
-        "indicator" => Statement::Indicator,
-        _ => Statement::Income,
-    }
-}
-fn scope_from_str(s: &str) -> Scope {
-    match s {
-        "parent" => Scope::Parent,
-        _ => Scope::Consolidated,
-    }
-}
-fn unit_from_str(s: &str) -> Unit {
-    match s {
-        "wan" => Unit::Wan,
-        "yi" => Unit::Yi,
-        _ => Unit::Raw,
-    }
-}
-fn audit_from_str(s: &str) -> AuditStatus {
-    match s {
-        "audited" => AuditStatus::Audited,
-        "unaudited" => AuditStatus::Unaudited,
-        _ => AuditStatus::Unknown,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{AuditStatus, Unit};
     use tempfile::TempDir;
     use time::{Duration, Month};
 

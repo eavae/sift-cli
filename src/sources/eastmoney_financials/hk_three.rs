@@ -172,7 +172,7 @@ fn build_summary_url(base: &str, sym: &Symbol) -> String {
     format!(
         "{base}?reportName=RPT_CUSTOM_HKSK_APPFN_CASHFLOW_SUMMARY\
          &columns=SECUCODE,REPORT_DATE,FISCAL_YEAR,CURRENCY,ACCOUNT_STANDARD,REPORT_TYPE,NOTICE_DATE\
-         &filter=(SECUCODE=\"{secucode}\")\
+         &filter=(SECUCODE=%22{secucode}%22)\
          &source=F10&client=PC"
     )
 }
@@ -185,12 +185,13 @@ fn build_long_url(base: &str, q: &Query) -> String {
         Statement::Cashflow => "RPT_HKF10_FN_CASHFLOW_PC",
         Statement::Indicator => unreachable!("Indicator routes to indicator.rs"),
     };
-    // EM accepts the literal filter without URL-encoding the parens /
-    // quotes in practice. We keep the call site readable; if a future
-    // EM tightening rejects this, switch to a small percent-encoder.
+    // ureq 3's `http::Uri` parser rejects raw `"` in the query
+    // string (per RFC 3986), so the SECUCODE quotes are
+    // percent-encoded as `%22`. Parens are tolerated and stay
+    // literal for readability.
     format!(
         "{base}?reportName={report_name}&columns=ALL\
-         &filter=(SECUCODE=\"{secucode}\")\
+         &filter=(SECUCODE=%22{secucode}%22)\
          &source=F10&client=PC"
     )
 }

@@ -4,6 +4,8 @@
 //! cell, post-normalization. The renderer pivots multiple rows back to
 //! wide table form at output time; storage / merging is always long.
 
+use std::str::FromStr;
+
 use time::Date;
 
 use crate::domain::period::PeriodType;
@@ -46,14 +48,6 @@ pub enum Statement {
 }
 
 impl Statement {
-    /// All four variants — handy for command-layer iteration and tests.
-    pub const ALL: &'static [Statement] = &[
-        Statement::Income,
-        Statement::Balance,
-        Statement::Cashflow,
-        Statement::Indicator,
-    ];
-
     /// Lower-case string used in CLI args and JSON output.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -61,6 +55,19 @@ impl Statement {
             Self::Balance => "balance",
             Self::Cashflow => "cashflow",
             Self::Indicator => "indicator",
+        }
+    }
+}
+
+impl FromStr for Statement {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "income" => Ok(Self::Income),
+            "balance" => Ok(Self::Balance),
+            "cashflow" => Ok(Self::Cashflow),
+            "indicator" => Ok(Self::Indicator),
+            _ => Err(()),
         }
     }
 }
@@ -79,6 +86,17 @@ impl Scope {
         match self {
             Self::Consolidated => "consolidated",
             Self::Parent => "parent",
+        }
+    }
+}
+
+impl FromStr for Scope {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "consolidated" => Ok(Self::Consolidated),
+            "parent" => Ok(Self::Parent),
+            _ => Err(()),
         }
     }
 }
@@ -115,6 +133,18 @@ impl Unit {
     }
 }
 
+impl FromStr for Unit {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "raw" => Ok(Self::Raw),
+            "wan" => Ok(Self::Wan),
+            "yi" => Ok(Self::Yi),
+            _ => Err(()),
+        }
+    }
+}
+
 /// Whether the report has been externally audited. Most A-share annuals
 /// are audited; quarterly reports are typically `Unaudited`. Upstream
 /// may not disclose audit status — represented by `Unknown` rather than
@@ -132,6 +162,18 @@ impl AuditStatus {
             Self::Audited => "audited",
             Self::Unaudited => "unaudited",
             Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl FromStr for AuditStatus {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "audited" => Ok(Self::Audited),
+            "unaudited" => Ok(Self::Unaudited),
+            "unknown" => Ok(Self::Unknown),
+            _ => Err(()),
         }
     }
 }
@@ -171,19 +213,6 @@ impl SourceTag {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn statement_all_lists_four_in_order() {
-        assert_eq!(
-            Statement::ALL,
-            &[
-                Statement::Income,
-                Statement::Balance,
-                Statement::Cashflow,
-                Statement::Indicator,
-            ]
-        );
-    }
 
     #[test]
     fn statement_as_str_table() {
@@ -229,5 +258,38 @@ mod tests {
         }
         assert_eq!(SourceTag::from_name("unknown"), None);
         assert_eq!(SourceTag::from_name(""), None);
+    }
+
+    #[test]
+    fn enum_from_str_round_trips_through_as_str() {
+        for &v in &[
+            Statement::Income,
+            Statement::Balance,
+            Statement::Cashflow,
+            Statement::Indicator,
+        ] {
+            assert_eq!(v.as_str().parse::<Statement>(), Ok(v));
+        }
+        for &v in &[Scope::Consolidated, Scope::Parent] {
+            assert_eq!(v.as_str().parse::<Scope>(), Ok(v));
+        }
+        for &v in &[Unit::Raw, Unit::Wan, Unit::Yi] {
+            assert_eq!(v.as_str().parse::<Unit>(), Ok(v));
+        }
+        for &v in &[
+            AuditStatus::Audited,
+            AuditStatus::Unaudited,
+            AuditStatus::Unknown,
+        ] {
+            assert_eq!(v.as_str().parse::<AuditStatus>(), Ok(v));
+        }
+    }
+
+    #[test]
+    fn enum_from_str_unknown_is_err() {
+        assert!("nope".parse::<Statement>().is_err());
+        assert!("nope".parse::<Scope>().is_err());
+        assert!("nope".parse::<Unit>().is_err());
+        assert!("nope".parse::<AuditStatus>().is_err());
     }
 }

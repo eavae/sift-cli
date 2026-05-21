@@ -16,8 +16,6 @@
 //! normalized via the F2 dictionary in
 //! [`crate::domain::items_dict::dict`], same as the EM source.
 
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
@@ -47,6 +45,9 @@ impl SinaFinancialSource {
         }
     }
 
+    /// Test-only seam — construct against an explicit URL. Production
+    /// callers use [`Self::new`] which reads the env-resolved default.
+    #[cfg(test)]
     pub fn with_url(url: impl Into<String>) -> Self {
         Self { base_url: url.into() }
     }
@@ -643,25 +644,6 @@ mod tests {
     }
 
     // ---- Dispatch interaction with eastmoney ------------------------
-
-    /// Helper: A-share EM dates response for one period.
-    fn em_dates_body() -> String {
-        r#"{"data":[{"REPORT_DATE":"2025-12-31"}]}"#.into()
-    }
-
-    /// EM wide-table response for 2025-12-31 with a single value so we
-    /// can distinguish EM-vs-sina by value at the call site.
-    fn em_wide_body() -> String {
-        r#"{"data":[{
-            "SECUCODE":"600519.SH",
-            "SECURITY_NAME_ABBR":"贵州茅台",
-            "REPORT_DATE":"2025-12-31",
-            "REPORT_TYPE":"年报",
-            "CURRENCY":"CNY",
-            "TOTAL_OPERATE_INCOME":111.0
-        }]}"#
-        .into()
-    }
 
     /// A tiny sina lrb response with a distinguishable value.
     fn sina_lrb_simple_body() -> String {

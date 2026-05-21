@@ -9,17 +9,109 @@
 //!   `YYYY-MM-DD HH:MM:SS` UTC string for stale-cache warnings,
 //!   without pulling a date crate.
 
+pub mod announcements;
 pub mod financials;
+pub mod record;
 pub mod search;
 pub mod ttl;
 
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use crate::error::SiftError;
 
 /// 24 h. Matches the F1 README "缓存策略" decision.
 pub const CACHE_TTL_SEARCH_SECS: u64 = 24 * 3600;
+
+// ---------------------------------------------------------------------------
+// DuckDB access — the one approved way to touch a `.duckdb` cache file
+// ---------------------------------------------------------------------------
+
+/// Connection intent for [`with_duckdb`]. Today both modes share the
+/// same retry-on-lock strategy in `open_duckdb_retrying`, but the
+/// label drives DuckDB's `ACCESS_MODE` setting (so a misuse like
+/// running `INSERT` under [`DuckAccess::Read`] is rejected by the DB
+/// instead of silently corrupting state) and serves as inline
+/// documentation at every call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DuckAccess {
+    /// `ACCESS_MODE = READ_ONLY`. With DuckDB's current single-writer
+    /// file-lock model a reader still loses if a writer holds the
+    /// exclusive lock, so reads also block via the retry ladder; the
+    /// label is for self-documentation and DB-enforced write-rejection.
+    Read,
+    /// `ACCESS_MODE = READ_WRITE` (DuckDB's default). Takes the
+    /// exclusive file lock; the retry ladder absorbs contention from
+    /// any sibling `sift` process briefly holding the lock.
+    Write,
+}
+
+/// Open a DuckDB connection on `path` for the duration of `body`,
+/// then drop it. The returned `Connection` is **never** exposed to
+/// the caller past the closure boundary — the borrow checker forbids
+/// it — which guarantees the OS file lock is released as soon as
+/// `body` returns. This is the only approved entry point to a
+/// `.duckdb` file inside the crate; never hold a `Connection` in a
+/// struct field.
+///
+/// Lock contention from a sibling `sift` process is absorbed by
+/// retrying `Connection::open_with_flags` with the
+/// `[20, 80, 320] ms` backoff ladder (matches `bio-ncbi`'s
+/// `RecordCache`). Three attempts, ≤ 420 ms total wait. After that
+/// the underlying `duckdb::Error` bubbles up wrapped in
+/// [`SiftError::Io`].
+///
+/// Use [`DuckAccess::Read`] for any SELECT-only path, [`DuckAccess::Write`]
+/// for schema init / INSERT / UPDATE. A `body` that issues writes
+/// under `Read` is rejected by DuckDB at execute time.
+pub fn with_duckdb<T>(
+    path: &Path,
+    access: DuckAccess,
+    body: impl FnOnce(&duckdb::Connection) -> Result<T, SiftError>,
+) -> Result<T, SiftError> {
+    let conn = open_duckdb_retrying(path, access)?;
+    let out = body(&conn);
+    // Drop is explicit for clarity; the connection (and its lock)
+    // would be released here anyway when `conn` goes out of scope.
+    drop(conn);
+    out
+}
+
+fn open_duckdb_retrying(
+    path: &Path,
+    access: DuckAccess,
+) -> Result<duckdb::Connection, SiftError> {
+    const DELAYS_MS: [u64; 3] = [20, 80, 320];
+    let mut last_err: Option<duckdb::Error> = None;
+    for &delay_ms in &DELAYS_MS {
+        // `Config::access_mode` consumes the config by value, so we
+        // build a fresh one per attempt — `Config` is !Clone.
+        let config = build_duckdb_config(access).map_err(|e| {
+            SiftError::Io(format!("duckdb config ({access:?}): {e}"))
+        })?;
+        match duckdb::Connection::open_with_flags(path, config) {
+            Ok(c) => return Ok(c),
+            Err(e) => {
+                last_err = Some(e);
+                std::thread::sleep(Duration::from_millis(delay_ms));
+            }
+        }
+    }
+    Err(SiftError::Io(format!(
+        "duckdb open {} ({:?}) after 3 retries: {}",
+        path.display(),
+        access,
+        last_err.expect("at least one attempt failed when entering Err branch"),
+    )))
+}
+
+fn build_duckdb_config(access: DuckAccess) -> Result<duckdb::Config, duckdb::Error> {
+    let cfg = duckdb::Config::default();
+    match access {
+        DuckAccess::Read => cfg.access_mode(duckdb::AccessMode::ReadOnly),
+        DuckAccess::Write => cfg.access_mode(duckdb::AccessMode::ReadWrite),
+    }
+}
 
 /// Resolve `~/.sift/cache`. Production callers chain a per-source
 /// subdir (e.g. `.join("cninfo")`); tests bypass this entirely by
@@ -198,5 +290,104 @@ mod tests {
     fn format_mtime_utc_returns_question_mark_for_missing_file() {
         let tmp = TempDir::new().unwrap();
         assert_eq!(format_mtime_utc(&tmp.path().join("nope")), "?");
+    }
+
+    // ------------------------------------------------------------------
+    // with_duckdb
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn with_duckdb_write_creates_file_and_runs_schema() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("t.duckdb");
+        with_duckdb(&path, DuckAccess::Write, |c| {
+            c.execute_batch("CREATE TABLE t (k INT PRIMARY KEY, v TEXT);")
+                .map_err(|e| SiftError::Io(format!("{e}")))?;
+            c.execute(
+                "INSERT INTO t VALUES (1, 'hello')",
+                duckdb::params![],
+            )
+            .map_err(|e| SiftError::Io(format!("{e}")))?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn with_duckdb_read_observes_prior_write_after_drop() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("t.duckdb");
+        with_duckdb(&path, DuckAccess::Write, |c| {
+            c.execute_batch("CREATE TABLE t (k INT);")
+                .map_err(|e| SiftError::Io(format!("{e}")))?;
+            c.execute("INSERT INTO t VALUES (42)", duckdb::params![])
+                .map_err(|e| SiftError::Io(format!("{e}")))?;
+            Ok(())
+        })
+        .unwrap();
+        // Write connection is dropped at this point — file lock free.
+        let v = with_duckdb(&path, DuckAccess::Read, |c| {
+            let mut s = c
+                .prepare("SELECT k FROM t")
+                .map_err(|e| SiftError::Io(format!("{e}")))?;
+            let mut rows = s
+                .query([])
+                .map_err(|e| SiftError::Io(format!("{e}")))?;
+            let r = rows
+                .next()
+                .map_err(|e| SiftError::Io(format!("{e}")))?
+                .expect("row");
+            let k: i32 = r.get(0).map_err(|e| SiftError::Io(format!("{e}")))?;
+            Ok(k)
+        })
+        .unwrap();
+        assert_eq!(v, 42);
+    }
+
+    #[test]
+    fn with_duckdb_read_rejects_write_attempts() {
+        // DuckDB enforces ACCESS_MODE: an INSERT under READ_ONLY must
+        // fail at execute time, which is the early-bug-detection
+        // benefit of plumbing the mode through `with_duckdb`.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("t.duckdb");
+        with_duckdb(&path, DuckAccess::Write, |c| {
+            c.execute_batch("CREATE TABLE t (k INT);")
+                .map_err(|e| SiftError::Io(format!("{e}")))
+        })
+        .unwrap();
+        let err = with_duckdb(&path, DuckAccess::Read, |c| {
+            c.execute("INSERT INTO t VALUES (1)", duckdb::params![])
+                .map_err(|e| SiftError::Io(format!("{e}")))
+        })
+        .unwrap_err();
+        let msg = format!("{err}");
+        // Match either "read-only" or "read only" — DuckDB error
+        // phrasing varies by version; both spellings appear upstream.
+        let m = msg.to_lowercase();
+        assert!(
+            m.contains("read-only") || m.contains("read only"),
+            "expected DuckDB read-only rejection, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn with_duckdb_propagates_body_errors_and_drops_connection() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("t.duckdb");
+        let err = with_duckdb(&path, DuckAccess::Write, |_c| {
+            Err::<(), _>(SiftError::Io("body bailed".into()))
+        })
+        .unwrap_err();
+        assert!(format!("{err}").contains("body bailed"));
+        // After the failing call, the next open must succeed — proves
+        // the connection (and its file lock) was released even on the
+        // error path.
+        with_duckdb(&path, DuckAccess::Write, |c| {
+            c.execute_batch("CREATE TABLE t (k INT);")
+                .map_err(|e| SiftError::Io(format!("{e}")))
+        })
+        .unwrap();
     }
 }

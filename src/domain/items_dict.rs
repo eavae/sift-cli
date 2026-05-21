@@ -17,20 +17,14 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
-use serde::Deserialize;
-
-use crate::domain::financial_row::Statement;
-
 const ITEMS_TEXT: &str = include_str!("../../data/items.txt");
-const DEFAULTS_JSON: &str = include_str!("../../data/financials_default_items.json");
 
 #[derive(Debug, Clone)]
 pub struct ItemEntry {
-    /// The standardized Chinese name (always present in `aliases`).
+    /// The standardized Chinese name. The full alias set lives in the
+    /// dictionary's `by_alias` map; we don't store it per-entry because
+    /// nothing in the codebase iterates it.
     pub cn: String,
-    /// Every label this entry matches: includes `cn` itself, EM English
-    /// columns, sina / HK Chinese synonyms.
-    pub aliases: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -58,10 +52,6 @@ impl ItemsDict {
         }
     }
 
-    /// Total entries — exposed for the schema test and any debug hint.
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
 }
 
 /// Process-wide dictionary singleton. First call parses the embedded
@@ -122,7 +112,6 @@ fn load_dict(text: &str) -> Result<ItemsDict, String> {
         }
         entries.push(ItemEntry {
             cn: cn.to_string(),
-            aliases,
         });
     }
 
@@ -156,34 +145,6 @@ pub fn drain_unmapped() -> Vec<String> {
     v
 }
 
-// --- Default items per statement ----------------------------------------
-
-#[derive(Deserialize)]
-struct Defaults {
-    income: Vec<String>,
-    balance: Vec<String>,
-    cashflow: Vec<String>,
-    indicator: Vec<String>,
-}
-
-/// Default core items for `statement`, in the order they should appear
-/// in the rendered table when the user has not supplied `--items`.
-/// Returns a `&[String]` so callers can iterate / borrow without
-/// allocating.
-pub fn default_items(statement: Statement) -> &'static [String] {
-    static D: OnceLock<Defaults> = OnceLock::new();
-    let d = D.get_or_init(|| {
-        serde_json::from_str(DEFAULTS_JSON)
-            .expect("data/financials_default_items.json failed to load")
-    });
-    match statement {
-        Statement::Income => &d.income,
-        Statement::Balance => &d.balance,
-        Statement::Cashflow => &d.cashflow,
-        Statement::Indicator => &d.indicator,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,9 +156,13 @@ mod tests {
     #[test]
     fn shipped_dict_loads_without_dup_aliases() {
         // Triggering `dict()` here exercises the panic path on a real
-        // shipped data file. A duplicate alias would panic via expect.
+        // shipped data file: a duplicate alias would panic via expect.
+        // A well-known anchor entry confirms the lookup index is wired.
         let d = dict();
-        assert!(d.len() >= 30, "shipped dict should have ≥30 entries");
+        assert!(
+            d.lookup("归母净利润").is_some(),
+            "shipped dict missing canonical entry"
+        );
     }
 
     #[test]
@@ -279,36 +244,37 @@ mod tests {
             B | EN_B\n\
         ";
         let d = load_dict(text).expect("parse");
-        assert_eq!(d.len(), 2);
         assert_eq!(d.lookup("A").unwrap().cn, "A");
         assert_eq!(d.lookup("EN_B").unwrap().cn, "B");
     }
 
     #[test]
     fn load_dict_auto_includes_cn_in_aliases() {
+        // Both the cn ("X") and the English alias ("EN_X") must
+        // resolve to the same entry — i.e. cn is implicitly its own
+        // alias even when not repeated in the source line.
         let text = "X | EN_X\n";
         let d = load_dict(text).expect("parse");
-        let e = d.lookup("X").expect("cn lookup");
-        assert!(e.aliases.contains(&"X".to_string()));
-        assert!(e.aliases.contains(&"EN_X".to_string()));
+        assert_eq!(d.lookup("X").unwrap().cn, "X");
+        assert_eq!(d.lookup("EN_X").unwrap().cn, "X");
     }
 
     #[test]
     fn load_dict_allows_entry_with_only_cn() {
         // No English code yet — still valid; the cn is its sole alias.
         let d = load_dict("孤立项\n").expect("parse");
-        assert_eq!(d.len(), 1);
         assert_eq!(d.lookup("孤立项").unwrap().cn, "孤立项");
     }
 
     #[test]
     fn load_dict_dedupes_cn_when_repeated_in_aliases() {
-        // Tolerate a stray repeat of cn in the aliases column — auto-add
-        // shouldn't double-insert.
+        // Tolerate a stray repeat of cn in the aliases column —
+        // auto-add shouldn't refuse to load, and the lookups still
+        // resolve. Without dedup `load_dict` would Err on duplicate
+        // alias.
         let d = load_dict("X | X | EN_X\n").expect("parse");
-        let e = d.lookup("X").unwrap();
-        let xs = e.aliases.iter().filter(|a| *a == "X").count();
-        assert_eq!(xs, 1);
+        assert_eq!(d.lookup("X").unwrap().cn, "X");
+        assert_eq!(d.lookup("EN_X").unwrap().cn, "X");
     }
 
     #[test]
@@ -333,11 +299,4 @@ mod tests {
         assert!(err.contains("empty alias"), "err: {err}");
     }
 
-    #[test]
-    fn default_items_present_with_expected_counts() {
-        assert_eq!(default_items(Statement::Income).len(), 7);
-        assert_eq!(default_items(Statement::Balance).len(), 7);
-        assert_eq!(default_items(Statement::Cashflow).len(), 5);
-        assert_eq!(default_items(Statement::Indicator).len(), 9);
-    }
 }

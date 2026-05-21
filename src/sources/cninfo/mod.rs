@@ -6,23 +6,19 @@
 //!   "数据源与协议".
 //! - [`announcements`] — F3 paginated `POST /new/hisAnnouncement/query`
 //!   with dedup, multi-column fan-out, and Beijing-timezone date
-//!   conversion. [`resolve_org_id`] (this file) is the symbol-resolver
-//!   used by callers before issuing a query.
-//! - [`download`] — F3 PDF fetch + atomic write.
+//!   conversion. The PDF download path itself lives on
+//!   [`crate::fetch::announce::AnnounceResolver::download_pdf`] now
+//!   (HTTP GET + `FileCache::write`) — the old standalone
+//!   `cninfo::download_pdf` collapsed into that method.
 
 pub mod announcements;
-pub mod download;
 pub mod listings;
 
 pub use announcements::{Announcements, AnnouncementQuery};
-pub use download::download_pdf;
 pub use listings::{CnInfoRow, StockLists};
 pub(crate) use listings::parse_envelope;
 
-use crate::cache::search::{fetch_stock_lists, load_cached_org_ids, SearchCacheOpts};
 use crate::domain::market::Market;
-use crate::error::SiftError;
-use crate::http::HttpClient;
 
 // ---------------------------------------------------------------------------
 // Shared base URL
@@ -42,9 +38,9 @@ pub(crate) const PAGE_SIZE: u32 = 30;
 /// Resolved base URL for cninfo's JSON endpoints. `SIFT_CNINFO_BASE`
 /// overrides the default for tests (mockito) and any future integration
 /// harness. Single canonical resolver — both `sources::cninfo::*` and
-/// `cache::search::*` route through here so the protocol stays
+/// `fetch::search::*` route through here so the protocol stays
 /// consistent across the crate.
-pub(crate) fn cninfo_base() -> String {
+pub fn cninfo_base() -> String {
     std::env::var("SIFT_CNINFO_BASE").unwrap_or_else(|_| DEFAULT_BASE.into())
 }
 
@@ -73,38 +69,6 @@ impl ResolvedSymbol {
         };
         format!("{}.{}", self.code, suffix)
     }
-}
-
-/// Resolve a single user-supplied code to a `ResolvedSymbol`.
-///
-/// Three-step strategy:
-/// 1. Read the on-disk F1 cache via
-///    [`crate::cache::search::load_cached_org_ids`] — if the code is
-///    present, return immediately (zero network).
-/// 2. Cache miss → call
-///    [`crate::cache::search::fetch_stock_lists`] with default opts
-///    (24h TTL, stale fallback). cninfo's name index is small + fast
-///    so this is cheaper than refusing and asking the user to run
-///    `sift search` first.
-/// 3. Re-read the cache. Still missing → `SiftError::MissingOrgId`,
-///    which exits 1 with a hint pointing at the code itself.
-pub fn resolve_org_id(http: &HttpClient, code: &str) -> Result<ResolvedSymbol, SiftError> {
-    if let Some((market, org_id)) = load_cached_org_ids().get(code) {
-        return Ok(ResolvedSymbol {
-            code: code.into(),
-            org_id: org_id.clone(),
-            market: *market,
-        });
-    }
-    let _ = fetch_stock_lists(http, SearchCacheOpts::default())?;
-    if let Some((market, org_id)) = load_cached_org_ids().get(code) {
-        return Ok(ResolvedSymbol {
-            code: code.into(),
-            org_id: org_id.clone(),
-            market: *market,
-        });
-    }
-    Err(SiftError::MissingOrgId(code.into()))
 }
 
 #[cfg(test)]

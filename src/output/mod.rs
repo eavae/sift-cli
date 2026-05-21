@@ -1,3 +1,4 @@
+pub mod announce;
 pub mod financial_render;
 pub mod render;
 pub mod tabular;

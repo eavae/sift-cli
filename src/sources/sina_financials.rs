@@ -294,8 +294,9 @@ fn audit_from_str(s: &str) -> AuditStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::AppContext;
+    use crate::fetch::report::dispatch_with_cache;
     use crate::sources::eastmoney_financials::EastmoneyFinancialSource;
-    use crate::sources::financial_source::dispatch_against;
 
     fn cn_a(code: &str) -> Symbol {
         Symbol {
@@ -694,10 +695,13 @@ mod tests {
 
         let em = build_em(&server);
         let sina = build_sina(&server);
-        let sources: Vec<&dyn FinancialSource> = vec![&em, &sina];
+        let ctx = AppContext {
+            sources: vec![Box::new(em), Box::new(sina)],
+            ..Default::default()
+        };
 
         let q = income_query(cn_a("600519"), vec![Period::Annual(2025)]);
-        let rows = dispatch_against(&q, &Context::default(), &sources).unwrap();
+        let rows = dispatch_with_cache(&q, &ctx).unwrap();
 
         assert!(!rows.is_empty(), "expected sina rows");
         assert_eq!(rows[0].source, SourceTag::Sina);
@@ -727,9 +731,12 @@ mod tests {
             .create();
         let em = build_em(&server);
         let sina = build_sina(&server);
-        let sources: Vec<&dyn FinancialSource> = vec![&em, &sina];
+        let ctx = AppContext {
+            sources: vec![Box::new(em), Box::new(sina)],
+            ..Default::default()
+        };
         let q = income_query(cn_a("600519"), vec![Period::Annual(2025)]);
-        let rows = dispatch_against(&q, &Context::default(), &sources).unwrap();
+        let rows = dispatch_with_cache(&q, &ctx).unwrap();
         assert_eq!(rows[0].source, SourceTag::Sina);
     }
 

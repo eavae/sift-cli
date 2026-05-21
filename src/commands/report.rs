@@ -1,30 +1,28 @@
-//! `sift financials {income | balance | cashflow | indicator | periods}`.
-
-use std::collections::BTreeSet;
+//! `sift report {income | balance | cashflow | indicator | periods}`.
 
 use clap::{Args, Subcommand, ValueEnum};
 
-use crate::cache::search as search_cache;
 use crate::domain::market::Market;
 use crate::domain::period::last_n_filed;
 use crate::domain::{
-    items_dict, Period, PeriodType, Query, Scope, SourceTag, Statement, Symbol, Unit,
+    items_dict, Period, Query, Scope, SourceTag, Statement, Symbol, Unit,
 };
 use crate::error::SiftError;
+use crate::fetch::report::{dispatch_with_cache_named, list_periods_union, load_listing_names};
 use crate::output::financial_render::{self, pivot};
 use crate::output::Format;
-use crate::sources::financial_source::{dispatch_with_cache_named, Context};
+use crate::sources::financial_source::Context;
 
-/// CLI surface for `sift financials`.
+/// CLI surface for `sift report`.
 #[derive(Subcommand, Debug)]
-pub enum FinancialsCmd {
-    /// 利润表 (income statement)
+pub enum ReportCmd {
+    /// income statement
     Income(StatementArgs),
-    /// 资产负债表 (balance sheet)
+    /// balance sheet
     Balance(StatementArgs),
-    /// 现金流量表 (cashflow statement)
+    /// cashflow statement
     Cashflow(StatementArgs),
-    /// 主要财务指标 (key indicators)
+    /// key indicators
     Indicator(StatementArgs),
     /// List available report periods for a symbol
     Periods(PeriodsArgs),
@@ -161,13 +159,13 @@ fn parse_period_token(s: &str) -> Result<Vec<Period>, String> {
 }
 
 /// Entry: dispatch the user's choice.
-pub fn run(cmd: FinancialsCmd, ctx: &Context, fmt: Format) -> Result<(), SiftError> {
+pub fn run(cmd: ReportCmd, ctx: &Context, fmt: Format) -> Result<(), SiftError> {
     match cmd {
-        FinancialsCmd::Income(a) => run_statement(Statement::Income, a, ctx, fmt),
-        FinancialsCmd::Balance(a) => run_statement(Statement::Balance, a, ctx, fmt),
-        FinancialsCmd::Cashflow(a) => run_statement(Statement::Cashflow, a, ctx, fmt),
-        FinancialsCmd::Indicator(a) => run_statement(Statement::Indicator, a, ctx, fmt),
-        FinancialsCmd::Periods(a) => run_periods(a, ctx, fmt),
+        ReportCmd::Income(a) => run_statement(Statement::Income, a, ctx, fmt),
+        ReportCmd::Balance(a) => run_statement(Statement::Balance, a, ctx, fmt),
+        ReportCmd::Cashflow(a) => run_statement(Statement::Cashflow, a, ctx, fmt),
+        ReportCmd::Indicator(a) => run_statement(Statement::Indicator, a, ctx, fmt),
+        ReportCmd::Periods(a) => run_periods(a, ctx, fmt),
     }
 }
 
@@ -198,10 +196,11 @@ fn run_statement(
         all_rows.extend(rows);
     }
 
-    // Load F1 cninfo name cache once per command — used to back-fill
-    // the security short name for rows where the source (sina) did
-    // not provide one. Empty map if the cache files are missing.
-    let names = search_cache::load_cached_names();
+    // Back-fill the security short name (sina lrb does not return it)
+    // from the F1 cninfo listing cache. Empty map if the cache is
+    // missing — render falls back to whatever `name` the source
+    // already populated.
+    let names = load_listing_names(ctx);
 
     let keep = resolve_items(&args.items, stmt);
     let table = pivot(all_rows, keep.as_deref(), &names);
@@ -262,7 +261,7 @@ fn resolve_periods(args: &StatementArgs, _stmt: Statement) -> Result<Vec<Period>
         }
         return Ok(out);
     }
-    // Bare `sift financials income <symbol>` (no time arg) — show
+    // Bare `sift report income <symbol>` (no time arg) — show
     // the most recent 8 periods by default. Dense enough to spot
     // trends without paging.
     Ok(last_n_filed(today, 8))
@@ -316,7 +315,7 @@ fn emit_unmapped_hint() {
         more
     );
     eprintln!(
-        "       帮我们补字典：https://github.com/anthropics/sift/issues (TODO once repo public)"
+        "       帮我们补字典：https://github.com/eavae/sift-cli/issues (TODO once repo public)"
     );
 }
 
@@ -326,47 +325,15 @@ fn emit_unmapped_hint() {
 
 fn run_periods(args: PeriodsArgs, ctx: &Context, _fmt: Format) -> Result<(), SiftError> {
     let sym = Symbol::parse(&args.symbol)?;
-    let registry = crate::sources::financial_source::registry();
-    let want = args.source.as_source_tag().map(SourceTag::as_str);
-    let mut union: BTreeSet<(time::Date, PeriodType, String)> = BTreeSet::new();
-    let mut any_called = false;
-    for src in registry {
-        if let Some(w) = want {
-            if src.name() != w {
-                continue;
-            }
-        }
-        let probe_query = Query {
-            symbol: sym.clone(),
-            statement: Statement::Income,
-            periods: vec![],
-            scope: Scope::Consolidated,
-        };
-        if !src.supports(&probe_query) {
-            continue;
-        }
-        any_called = true;
-        if let Ok(periods) = src.list_periods(&sym, ctx) {
-            for p in periods {
-                let pt = p.period_type().unwrap_or(PeriodType::Annual);
-                union.insert((p.end_date(), pt, src.name().to_string()));
-            }
-        }
-    }
-    if !any_called {
-        return Err(SiftError::NoApplicableSource(format!(
-            "no source supports {} for periods query",
-            args.symbol
-        )));
-    }
+    let pinned = args.source.as_source_tag().map(SourceTag::as_str);
+    let items = list_periods_union(&sym, ctx, pinned)?;
     // Render: period_end / period_type / source — one line per
-    // (date, source) pair, newest first.
+    // (date, source) pair, newest first (sort is done by the fetch
+    // helper).
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
     use std::io::Write;
     writeln!(handle, "period\tperiod_type\tsource").ok();
-    let mut items: Vec<_> = union.into_iter().collect();
-    items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
     for (date, pt, name) in items {
         writeln!(
             handle,

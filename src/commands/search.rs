@@ -5,13 +5,13 @@
 
 use serde::{Serialize, Serializer};
 
-use crate::cache::search::{fetch_stock_lists, SearchCacheOpts};
+use crate::app::AppContext;
 use crate::cli::SearchArgs;
 use crate::domain::market::{infer_board, Board, Market};
 use crate::error::SiftError;
-use crate::http::HttpClient;
+use crate::fetch::search::load_all_listings;
 use crate::output::{self, Format, RenderRow};
-use crate::sources::cninfo::{CnInfoRow, StockLists};
+use crate::sources::cninfo::CnInfoRow;
 
 /// One row of the search result. Field *order* is what `serde_json`
 /// emits for `--format json`; the table / tsv column order is defined
@@ -71,15 +71,9 @@ impl RenderRow for SearchHit {
 }
 
 /// Entry point dispatched from `main.rs`.
-pub fn run(args: SearchArgs, fmt: Format) -> Result<(), SiftError> {
-    let http = HttpClient::new();
-    let lists = fetch_stock_lists(
-        &http,
-        SearchCacheOpts {
-            no_cache: args.no_cache,
-        },
-    )?;
-    let hits = find_matches(&lists, &args.query, args.limit);
+pub fn run(args: SearchArgs, ctx: &AppContext, fmt: Format) -> Result<(), SiftError> {
+    let listings = load_all_listings(ctx, args.no_cache)?;
+    let hits = find_matches(&listings, &args.query, args.limit);
     if hits.is_empty() {
         return Err(SiftError::NotFound(args.query));
     }
@@ -89,21 +83,24 @@ pub fn run(args: SearchArgs, fmt: Format) -> Result<(), SiftError> {
     Ok(())
 }
 
-/// Three-way fuzzy match. The query is normalized (`trim` +
-/// `to_ascii_lowercase`); Chinese characters pass through unchanged so
-/// `zwjc.contains(query)` stays correct.
-pub fn find_matches(lists: &StockLists, query: &str, limit: u32) -> Vec<SearchHit> {
+/// Three-way fuzzy match over the `(Market, CnInfoRow)` pairs the
+/// fetch layer produced. The query is normalized (`trim` +
+/// `to_ascii_lowercase`); Chinese characters pass through unchanged
+/// so `zwjc.contains(query)` stays correct.
+pub fn find_matches(
+    listings: &[(Market, CnInfoRow)],
+    query: &str,
+    limit: u32,
+) -> Vec<SearchHit> {
     let q = query.trim().to_ascii_lowercase();
     if q.is_empty() {
         return Vec::new();
     }
 
-    let mut matched: Vec<(Market, &CnInfoRow)> = lists
-        .cn_a
+    let mut matched: Vec<(Market, &CnInfoRow)> = listings
         .iter()
-        .map(|r| (Market::CnA, r))
-        .chain(lists.hk.iter().map(|r| (Market::Hk, r)))
         .filter(|(_, r)| matches_any(&q, r))
+        .map(|(m, r)| (*m, r))
         .collect();
 
     // `Market` derives `Ord` with CnA < Hk, so the sort key reads as
@@ -148,26 +145,22 @@ mod tests {
         }
     }
 
-    fn lists() -> StockLists {
-        StockLists {
-            cn_a: vec![
-                row("600519", "贵州茅台", "gzmt", "A股", "gssh0600519"),
-                row("002013", "贵州轮胎", "gzlt", "A股", "gssz0002013"),
-                row("000001", "平安银行", "payh", "A股", "gssz0000001"),
-                row("601288", "农业银行", "nyyh", "A股", "gssh0601288"),
-                row("601398", "工商银行", "gsyh", "A股", "gssh0601398"),
-                row("688123", "聚辰股份", "jcgf", "A股", "gssh0688123"),
-            ],
-            hk: vec![
-                row("00388", "香港交易所", "xgjys", "港股", "gshk00388"),
-                row("00700", "腾讯控股", "txkg", "港股", "gshk00700"),
-            ],
-        }
+    fn listings() -> Vec<(Market, CnInfoRow)> {
+        vec![
+            (Market::CnA, row("600519", "贵州茅台", "gzmt", "A股", "gssh0600519")),
+            (Market::CnA, row("002013", "贵州轮胎", "gzlt", "A股", "gssz0002013")),
+            (Market::CnA, row("000001", "平安银行", "payh", "A股", "gssz0000001")),
+            (Market::CnA, row("601288", "农业银行", "nyyh", "A股", "gssh0601288")),
+            (Market::CnA, row("601398", "工商银行", "gsyh", "A股", "gssh0601398")),
+            (Market::CnA, row("688123", "聚辰股份", "jcgf", "A股", "gssh0688123")),
+            (Market::Hk, row("00388", "香港交易所", "xgjys", "港股", "gshk00388")),
+            (Market::Hk, row("00700", "腾讯控股", "txkg", "港股", "gshk00700")),
+        ]
     }
 
     #[test]
     fn chinese_substring_matches_zwjc() {
-        let hits = find_matches(&lists(), "茅台", 10);
+        let hits = find_matches(&listings(), "茅台", 10);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].code, "600519");
         assert_eq!(hits[0].name, "贵州茅台");
@@ -177,16 +170,16 @@ mod tests {
 
     #[test]
     fn pinyin_initials_match_case_insensitively() {
-        let hits = find_matches(&lists(), "gzmt", 10);
+        let hits = find_matches(&listings(), "gzmt", 10);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].code, "600519");
 
         // Uppercase / mixed case → same result via `to_ascii_lowercase`.
-        let upper = find_matches(&lists(), "GZMT", 10);
+        let upper = find_matches(&listings(), "GZMT", 10);
         assert_eq!(upper, hits);
 
         // Multi-row prefix: both `gzmt` and `gzlt` start with `gz`.
-        let multi = find_matches(&lists(), "gz", 10);
+        let multi = find_matches(&listings(), "gz", 10);
         let codes: Vec<&str> = multi.iter().map(|h| h.code.as_str()).collect();
         assert!(codes.contains(&"600519"));
         assert!(codes.contains(&"002013"));
@@ -196,14 +189,14 @@ mod tests {
 
     #[test]
     fn code_exact_match_returns_single_row() {
-        let hits = find_matches(&lists(), "600519", 10);
+        let hits = find_matches(&listings(), "600519", 10);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].code, "600519");
     }
 
     #[test]
     fn code_substring_match() {
-        let hits = find_matches(&lists(), "688", 10);
+        let hits = find_matches(&listings(), "688", 10);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].code, "688123");
         assert_eq!(hits[0].board, Some(Board::ShStar));
@@ -211,7 +204,7 @@ mod tests {
 
     #[test]
     fn five_digit_hk_code_returns_none_board() {
-        let hits = find_matches(&lists(), "00700", 10);
+        let hits = find_matches(&listings(), "00700", 10);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].code, "00700");
         assert_eq!(hits[0].market, Market::Hk);
@@ -220,13 +213,13 @@ mod tests {
 
     #[test]
     fn empty_or_whitespace_query_returns_empty() {
-        assert!(find_matches(&lists(), "", 10).is_empty());
-        assert!(find_matches(&lists(), "   ", 10).is_empty());
+        assert!(find_matches(&listings(), "", 10).is_empty());
+        assert!(find_matches(&listings(), "   ", 10).is_empty());
     }
 
     #[test]
     fn no_match_returns_empty_vec() {
-        assert!(find_matches(&lists(), "absolutely_not_present", 10).is_empty());
+        assert!(find_matches(&listings(), "absolutely_not_present", 10).is_empty());
     }
 
     #[test]
@@ -234,7 +227,7 @@ mod tests {
         // `"00"` is a substring of multiple A-share codes (000001 / 002013 /
         // 600519) as well as both HK codes. Ordering: all A-share rows
         // first by lexicographic code, then HK rows by code.
-        let hits = find_matches(&lists(), "00", 10);
+        let hits = find_matches(&listings(), "00", 10);
         let codes: Vec<&str> = hits.iter().map(|h| h.code.as_str()).collect();
         assert_eq!(codes, vec!["000001", "002013", "600519", "00388", "00700"]);
         let markets: Vec<Market> = hits.iter().map(|h| h.market).collect();
@@ -247,7 +240,7 @@ mod tests {
     #[test]
     fn limit_truncates_after_sort() {
         // "银行" hits 000001 / 601288 / 601398.
-        let hits = find_matches(&lists(), "银行", 2);
+        let hits = find_matches(&listings(), "银行", 2);
         assert_eq!(hits.len(), 2);
         // Sorted: 000001 wins, then 601288.
         assert_eq!(hits[0].code, "000001");
@@ -258,12 +251,12 @@ mod tests {
     fn renders_typed_fields_correctly() {
         // Spot-check that the enum → string mapping reaches the renderer
         // unchanged for both branches (Some(board), None).
-        let hits = find_matches(&lists(), "茅台", 10);
+        let hits = find_matches(&listings(), "茅台", 10);
         let cells = hits[0].cells();
         assert_eq!(cells[2], "CN-A"); // market upper-cased for table
         assert_eq!(cells[3], "sh-main");
 
-        let hk = find_matches(&lists(), "00700", 10);
+        let hk = find_matches(&listings(), "00700", 10);
         let cells = hk[0].cells();
         assert_eq!(cells[2], "HK");
         assert_eq!(cells[3], "—");
@@ -271,12 +264,12 @@ mod tests {
 
     #[test]
     fn json_serializes_market_and_board_lowercase() {
-        let hits = find_matches(&lists(), "茅台", 10);
+        let hits = find_matches(&listings(), "茅台", 10);
         let v: serde_json::Value = serde_json::to_value(&hits[0]).unwrap();
         assert_eq!(v["market"], "cn-a");
         assert_eq!(v["board"], "sh-main");
 
-        let hk = find_matches(&lists(), "00700", 10);
+        let hk = find_matches(&listings(), "00700", 10);
         let v: serde_json::Value = serde_json::to_value(&hk[0]).unwrap();
         assert_eq!(v["market"], "hk");
         assert_eq!(v["board"], "—");

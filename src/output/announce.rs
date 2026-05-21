@@ -1,5 +1,7 @@
-//! View layer for `sift announce`: projection structs + the three
-//! renderers (`types`, `list`, `show`). No cache, no network — every
+//! Render layer for `sift announce`: projection structs + the three
+//! renderers (`types`, `list`, `show`). Sibling of
+//! [`crate::output::financial_render`] for F2; consumed by
+//! [`crate::commands::announce`]. No cache, no network — every
 //! function here takes already-resolved domain values and writes
 //! formatted bytes to the provided `W`.
 
@@ -19,7 +21,7 @@ use crate::output::RenderRow;
 /// dash matches the convention `pandas` / `awk` users expect; sift
 /// commands should never emit a bare empty string for a column that
 /// is semantically nullable.
-pub(super) const MISSING: &str = "-";
+const MISSING: &str = "-";
 
 // ---------------------------------------------------------------------------
 // `types` view
@@ -38,7 +40,7 @@ pub(super) const MISSING: &str = "-";
 /// - `Serialize` + `RenderRow` keep the existing TSV / NDJSON paths
 ///   going through `output::render`.
 #[derive(Debug, Clone, Serialize, Tabled)]
-pub(super) struct TypeRow {
+pub struct TypeRow {
     pub zh: String,
     pub category: String,
     pub note: String,
@@ -58,7 +60,7 @@ impl RenderRow for TypeRow {
 /// slots — `category` for an aggregate, `note` for an official entry
 /// — get [`MISSING`] (`-`) so the table reads symmetrically and
 /// machine consumers see an explicit non-empty token.
-pub(super) fn to_type_row(c: &Category) -> TypeRow {
+pub fn to_type_row(c: &Category) -> TypeRow {
     match (&c.category, &c.aggregates) {
         (Some(cat), None) => TypeRow {
             zh: c.zh.clone(),
@@ -85,7 +87,7 @@ pub(super) fn to_type_row(c: &Category) -> TypeRow {
 /// no top/bottom padding. Mirrors the F2 tech_design tabled
 /// convention and keeps the visual identity uniform across sift
 /// commands.
-pub(super) fn render_tabled<W: Write>(out: &mut W, rows: &[TypeRow]) -> Result<(), SiftError> {
+pub fn render_tabled<W: Write>(out: &mut W, rows: &[TypeRow]) -> Result<(), SiftError> {
     let mut t = Table::new(rows);
     t.with(Style::empty()).with(Padding::new(0, 2, 0, 0));
     writeln!(out, "{t}").map_err(|e| SiftError::Internal(format!("io: {e}")))?;
@@ -100,7 +102,7 @@ pub(super) fn render_tabled<W: Write>(out: &mut W, rows: &[TypeRow]) -> Result<(
 /// `AnnouncementRow::headers()` so `--format tsv` shape is byte-for-
 /// byte stable across the cninfo schema; only the header prefix
 /// (`#`) changes when migrating from `output::render`.
-pub(super) struct AnnouncementListTsvView<'a>(pub &'a [AnnouncementRow]);
+pub struct AnnouncementListTsvView<'a>(pub &'a [AnnouncementRow]);
 
 impl TabularView for AnnouncementListTsvView<'_> {
     fn columns(&self) -> Vec<&str> {
@@ -116,7 +118,7 @@ impl TabularView for AnnouncementListTsvView<'_> {
 /// `id / symbol / name / date / type / title / size_kb`) to keep the
 /// TTY width manageable; TSV / NDJSON still emit all ten via the
 /// generic `RenderRow` path.
-pub(super) fn render_list_table<W: Write>(
+pub fn render_list_table<W: Write>(
     out: &mut W,
     rows: &[AnnouncementRow],
 ) -> Result<(), SiftError> {
@@ -163,7 +165,7 @@ impl ListTableRow {
 /// One-row payload for `show` in TSV / NDJSON. Owns its strings — the
 /// row that fed in came from stdin and is cheap to clone once.
 #[derive(Serialize)]
-pub(super) struct ShowOutRow {
+pub struct ShowOutRow {
     pub id: String,
     pub symbol: String,
     pub name: String,
@@ -179,7 +181,7 @@ pub(super) struct ShowOutRow {
 }
 
 impl ShowOutRow {
-    pub(super) fn from_parts(row: &AnnouncementRow, cached: &str) -> Self {
+    pub fn from_parts(row: &AnnouncementRow, cached: &str) -> Self {
         Self {
             id: row.id.clone(),
             symbol: row.symbol.clone(),
@@ -224,7 +226,7 @@ impl RenderRow for ShowOutRow {
 /// TSV view of the single-row `show` payload. The 11-column schema
 /// matches [`ShowOutRow::headers`]; only the header prefix differs
 /// from the NDJSON-companion `RenderRow` path.
-pub(super) struct ShowTsvView<'a>(pub &'a ShowOutRow);
+pub struct ShowTsvView<'a>(pub &'a ShowOutRow);
 
 impl TabularView for ShowTsvView<'_> {
     fn columns(&self) -> Vec<&str> {
@@ -238,7 +240,7 @@ impl TabularView for ShowTsvView<'_> {
 /// Two-column `key  value` view for `show`. Keys are left-justified
 /// in unicode width; values follow after a two-space gutter — the
 /// same rhythm as `tabled`'s `Padding::new(0, 2, 0, 0)`.
-pub(super) fn render_show_kv<W: Write>(
+pub fn render_show_kv<W: Write>(
     out: &mut W,
     row: &AnnouncementRow,
     cached: &str,

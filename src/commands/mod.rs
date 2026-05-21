@@ -2,5 +2,5 @@
 //! input validation, data-source plumbing, rendering, and exit code.
 
 pub mod announce;
-pub mod financials;
+pub mod report;
 pub mod search;

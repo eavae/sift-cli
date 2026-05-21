@@ -1,16 +1,19 @@
+mod app;
 mod cache;
 mod cli;
 mod commands;
 mod domain;
 mod error;
+mod fetch;
 mod http;
 mod output;
 mod sources;
 
-use std::sync::Arc;
-
 use clap::Parser;
 
+use crate::app::AppContext;
+use crate::cache::file::FileCache;
+use crate::cache::record::RecordCache;
 use crate::cli::{Cli, Command};
 use crate::error::SiftError;
 
@@ -22,9 +25,9 @@ fn main() {
     let fmt = cli.format.unwrap_or(output::Format::Table);
 
     let result: Result<(), SiftError> = match cli.command {
-        Command::Search(args) => commands::search::run(args, fmt),
-        Command::Financials { cmd } => run_financials(cmd, fmt),
-        Command::Announce { cmd } => commands::announce::run(cmd, fmt),
+        Command::Search(args) => run_search(args, fmt),
+        Command::Report { cmd } => run_report(cmd, fmt),
+        Command::Announce { cmd } => run_announce(cmd, fmt),
     };
 
     if let Err(e) = result {
@@ -33,44 +36,83 @@ fn main() {
     }
 }
 
-/// Wire up the F2 source registry + cache once, then dispatch the
-/// chosen `financials` subcommand.
-fn run_financials(
-    cmd: crate::commands::financials::FinancialsCmd,
-    fmt: output::Format,
-) -> Result<(), SiftError> {
-    // Init the global source registry once per process. `init` panics
-    // on a second call, which is the right behaviour for a binary
-    // entry point.
-    static REGISTRY_ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    REGISTRY_ONCE.get_or_init(|| {
-        sources::financial_source::init(vec![
-            sources::eastmoney_financials::build(),
-            sources::sina_financials::build(),
-        ]);
-    });
-
-    // Open the financial cache (best-effort; fall back to no-cache on failure).
-    let cache = match cache::cache_root() {
-        Ok(root) => {
-            let path = root.join("financials.duckdb");
-            match cache::financials::FinancialCache::open(&path) {
-                Ok(c) => Some(Arc::new(c)),
-                Err(e) => {
-                    eprintln!("[warn] disabling cache: {e}");
-                    None
-                }
-            }
-        }
+/// Open the filesystem cache rooted at `~/.sift/cache/`. `None` is
+/// the warn-and-continue mode — every caller already guards on the
+/// Option (fetch helpers return empty / propagate `SiftError::Io` as
+/// needed). The only failure path here is `$HOME` resolution.
+fn open_file_cache() -> Option<FileCache> {
+    match cache::cache_root() {
+        Ok(p) => Some(FileCache::open(p)),
         Err(e) => {
             eprintln!("[warn] disabling cache: {e}");
             None
         }
-    };
+    }
+}
 
-    let ctx = sources::financial_source::Context {
+/// Open `<root>/records.duckdb` best-effort. F2 financials + F3
+/// announce metadata both live in this one DuckDB file (different
+/// `Kind` namespaces in `cache_entries`). `None` is the warn-and-
+/// continue mode — every caller already guards on the Option.
+fn open_records_cache(file_cache: Option<&FileCache>) -> Option<RecordCache> {
+    let files = file_cache?;
+    match RecordCache::open_at(&files.path("records.duckdb")) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            eprintln!("[warn] record cache unavailable: {e}; running without cache");
+            None
+        }
+    }
+}
+
+/// Build the AppContext for `sift search` and dispatch. The listing
+/// cache is filesystem-only (atomic JSON files under
+/// `<root>/cninfo/`), so the ctx carries no DuckDB handle here.
+fn run_search(args: cli::SearchArgs, fmt: output::Format) -> Result<(), SiftError> {
+    let ctx = AppContext {
         http: http::HttpClient::new(),
-        cache,
+        file_cache: open_file_cache(),
+        ..Default::default()
     };
-    commands::financials::run(cmd, &ctx, fmt)
+    commands::search::run(args, &ctx, fmt)
+}
+
+/// Build the AppContext for `sift report` and dispatch the chosen
+/// subcommand. The F2 source list is constructed inline (one
+/// EastMoney + one sina) so there's no hidden global to install.
+fn run_report(
+    cmd: crate::commands::report::ReportCmd,
+    fmt: output::Format,
+) -> Result<(), SiftError> {
+    let file_cache = open_file_cache();
+    let records_cache = open_records_cache(file_cache.as_ref());
+
+    let ctx = AppContext {
+        http: http::HttpClient::new(),
+        file_cache,
+        records_cache,
+        sources: vec![
+            sources::eastmoney_financials::build(),
+            sources::sina_financials::build(),
+        ],
+    };
+    commands::report::run(cmd, &ctx, fmt)
+}
+
+/// Build the AppContext for `sift announce` and dispatch the chosen
+/// subcommand. Shares the same `records.duckdb` file with `report`.
+fn run_announce(
+    cmd: crate::commands::announce::AnnounceCmd,
+    fmt: output::Format,
+) -> Result<(), SiftError> {
+    let file_cache = open_file_cache();
+    let records_cache = open_records_cache(file_cache.as_ref());
+
+    let ctx = AppContext {
+        http: http::HttpClient::new(),
+        file_cache,
+        records_cache,
+        ..Default::default()
+    };
+    commands::announce::run(cmd, &ctx, fmt)
 }

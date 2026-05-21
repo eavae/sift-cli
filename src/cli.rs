@@ -46,11 +46,11 @@ pub fn parse_user_format(s: &str) -> Result<Format, String> {
 pub enum Command {
     /// Fuzzy-search the cninfo A-share + HK listings
     Search(SearchArgs),
-    /// Financial statements + key indicators (income / balance /
+    /// Financial reports + key indicators (income / balance /
     /// cashflow / indicator / periods)
-    Financials {
+    Report {
         #[command(subcommand)]
-        cmd: crate::commands::financials::FinancialsCmd,
+        cmd: crate::commands::report::ReportCmd,
     },
     /// Announcements: list / show / download / types
     Announce {

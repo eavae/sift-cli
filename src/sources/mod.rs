@@ -8,6 +8,7 @@
 //!   Concrete adapters (eastmoney, sina) land in Stories 03 / 04.
 
 pub mod cninfo;
+pub mod eastmoney;
 pub mod eastmoney_financials;
 pub mod financial_source;
 pub mod paddleocr;

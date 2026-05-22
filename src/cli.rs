@@ -59,6 +59,10 @@ pub enum Command {
     },
     /// Extract a PDF announcement (by id or local path) as Markdown
     Extract(crate::commands::extract::ExtractArgs),
+    /// Current-price snapshot for one or more symbols
+    Quote(crate::commands::quote::QuoteArgs),
+    /// Historical daily OHLC bars for a symbol
+    Bars(crate::commands::bars::BarsArgs),
 }
 
 #[derive(clap::Args, Debug)]

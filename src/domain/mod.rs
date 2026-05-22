@@ -12,11 +12,13 @@
 //!   dictionary plus the unmapped-label collector (F2).
 
 pub mod announcement;
+pub mod bars;
 pub mod financial_query;
 pub mod financial_row;
 pub mod items_dict;
 pub mod market;
 pub mod period;
+pub mod quote;
 pub mod symbol;
 
 pub use symbol::Symbol;

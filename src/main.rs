@@ -30,6 +30,8 @@ fn main() {
         Command::Report { cmd } => run_report(cmd, fmt),
         Command::Announce { cmd } => run_announce(cmd, fmt),
         Command::Extract(args) => run_extract(args, fmt),
+        Command::Quote(args) => run_quote(args, fmt),
+        Command::Bars(args) => run_bars(args, fmt),
     };
 
     if let Err(e) = result {
@@ -134,4 +136,38 @@ fn run_extract(
 ) -> Result<(), SiftError> {
     let ctx = build_app_context(true);
     commands::extract::run(args, &ctx, fmt)
+}
+
+/// Build a no-cache AppContext for `sift quote` and dispatch. Quote
+/// is a fresh-every-call data source per the F5 README "cache
+/// strategy" section: realtime snapshot data has zero cache hit
+/// rate, so we do not even open the filesystem cache root (which
+/// `build_app_context(false)` would happily do for search). Both
+/// cache slots are explicitly `None`.
+fn run_quote(
+    args: crate::commands::quote::QuoteArgs,
+    fmt: output::Format,
+) -> Result<(), SiftError> {
+    let ctx = AppContext {
+        http: http::HttpClient::new(),
+        file_cache: None,
+        records_cache: None,
+    };
+    commands::quote::run(args, &ctx, fmt)
+}
+
+/// Build a no-cache AppContext for `sift bars` and dispatch. Same
+/// rationale as `run_quote`: per the F5 README "cache strategy"
+/// section, daily K is fast enough on EM's `kline/get` that local
+/// caching adds no value.
+fn run_bars(
+    args: crate::commands::bars::BarsArgs,
+    fmt: output::Format,
+) -> Result<(), SiftError> {
+    let ctx = AppContext {
+        http: http::HttpClient::new(),
+        file_cache: None,
+        records_cache: None,
+    };
+    commands::bars::run(args, &ctx, fmt)
 }

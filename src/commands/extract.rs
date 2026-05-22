@@ -29,13 +29,13 @@ use crate::pdf::pages::PageSpec;
 #[derive(Args, Debug)]
 pub struct ExtractArgs {
     /// announcementId (e.g. `1219506510`) or local PDF path (e.g.
-    /// `./report.pdf`). sift autodetects which it is — see the
-    /// table in the README.
+    /// `./report.pdf`). sift autodetects which it is from the shape
+    /// of the string (all-digit → id; anything else → path).
     pub target: String,
 
-    /// Pages to extract. Accepts single page (`3`), range (`1-5`)
+    /// Pages to extract. Accepts single page (`3`), range (`1-5`),
     /// or multi-segment (`1-3,7,10-12`). Omit to take the whole
-    /// document — not recommended for long PDFs (see README).
+    /// document — not recommended for long PDFs.
     #[arg(long)]
     pub pages: Option<String>,
 

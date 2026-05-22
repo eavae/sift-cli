@@ -40,13 +40,39 @@ use crate::sources::cninfo::ResolvedSymbol;
 
 #[derive(Subcommand, Debug)]
 pub enum AnnounceCmd {
-    /// Print the 27 中文 `--type` values understood by `announce list`
+    #[command(
+        about = "Print the 中文 `--type` values understood by `announce list`",
+        long_about = "Print the 中文 `--type` values understood by `announce list`.\n\n\
+                      Example:\n  \
+                      sift announce types"
+    )]
     Types,
-    /// List announcements for one or more symbols (Story 03)
+    #[command(
+        about = "List announcements for one or more symbols, or scan the whole market by date",
+        long_about = "List announcements for one or more symbols, or scan the whole market by date.\n\n\
+                      Examples:\n  \
+                      sift announce list 600519 --type 年报\n  \
+                      sift announce list 600519 00700 --start 2024-01-01 --end 2024-06-30\n  \
+                      sift announce list --start 2025-04-01 --end 2025-04-30 --keyword 减持"
+    )]
     List(ListArgs),
-    /// Show metadata for a single announcement (Story 03)
+    #[command(
+        about = "Show metadata for a single announcement (reads NDJSON from stdin for un-cached ids)",
+        long_about = "Show metadata for a single announcement.\n\n\
+                      cninfo has no by-id metadata endpoint, so for ids not already in the local record \
+                      cache `show` reads NDJSON rows from stdin. The typical pipeline is to feed it \
+                      `announce list --format json` output.\n\n\
+                      Example:\n  \
+                      sift announce list 600519 --format json | sift announce show 1219506510"
+    )]
     Show(ShowArgs),
-    /// Download PDFs to a local directory (Story 04)
+    #[command(
+        about = "Download announcement PDFs to a local directory",
+        long_about = "Download announcement PDFs to a local directory.\n\n\
+                      URL context for un-cached ids comes from stdin NDJSON (same pipeline as `show`).\n\n\
+                      Example:\n  \
+                      sift announce list 600519 --format json | sift announce download 1219506510 -o ./pdfs"
+    )]
     Download(DownloadArgs),
 }
 

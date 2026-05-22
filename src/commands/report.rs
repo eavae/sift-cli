@@ -17,15 +17,40 @@ use crate::output::Format;
 /// CLI surface for `sift report`.
 #[derive(Subcommand, Debug)]
 pub enum ReportCmd {
-    /// income statement
+    #[command(
+        about = "Income statement (营业总收入 / 净利润 / 毛利率 …)",
+        long_about = "Income statement (营业总收入 / 净利润 / 毛利率 …).\n\n\
+                      Example:\n  \
+                      sift report income 600519 --last 4"
+    )]
     Income(StatementArgs),
-    /// balance sheet
+    #[command(
+        about = "Balance sheet (资产总计 / 负债合计 / 股东权益 …)",
+        long_about = "Balance sheet (资产总计 / 负债合计 / 股东权益 …).\n\n\
+                      Example:\n  \
+                      sift report balance 00700 --period 2024A,2023A"
+    )]
     Balance(StatementArgs),
-    /// cashflow statement
+    #[command(
+        about = "Cashflow statement (经营 / 投资 / 筹资活动现金流量 …)",
+        long_about = "Cashflow statement (经营 / 投资 / 筹资活动现金流量 …).\n\n\
+                      Example:\n  \
+                      sift report cashflow 600519 --start 2020 --end 2024 --annual"
+    )]
     Cashflow(StatementArgs),
-    /// key indicators
+    #[command(
+        about = "Key financial indicators (ROE / EPS / 毛利率 / 资产负债率 …)",
+        long_about = "Key financial indicators (ROE / EPS / 毛利率 / 资产负债率 …).\n\n\
+                      Example:\n  \
+                      sift report indicator 600519 --last 8"
+    )]
     Indicator(StatementArgs),
-    /// List available report periods for a symbol
+    #[command(
+        about = "List the report periods available upstream for a symbol",
+        long_about = "List the report periods available upstream for a symbol.\n\n\
+                      Example:\n  \
+                      sift report periods 600519"
+    )]
     Periods(PeriodsArgs),
 }
 

@@ -67,15 +67,28 @@ fn open_records_cache(file_cache: Option<&FileCache>) -> Option<RecordCache> {
     }
 }
 
+/// Build an [`AppContext`] with the HTTP client and optional caches.
+/// `with_records = true` also opens the DuckDB record cache (used by
+/// `report`, `announce`, `extract`); `false` skips it (used by `search`).
+fn build_app_context(with_records: bool) -> AppContext {
+    let file_cache = open_file_cache();
+    let records_cache = if with_records {
+        open_records_cache(file_cache.as_ref())
+    } else {
+        None
+    };
+    AppContext {
+        http: http::HttpClient::new(),
+        file_cache,
+        records_cache,
+    }
+}
+
 /// Build the AppContext for `sift search` and dispatch. The listing
 /// cache is filesystem-only (atomic JSON files under
 /// `<root>/cninfo/`), so the ctx carries no DuckDB handle here.
 fn run_search(args: cli::SearchArgs, fmt: output::Format) -> Result<(), SiftError> {
-    let ctx = AppContext {
-        http: http::HttpClient::new(),
-        file_cache: open_file_cache(),
-        records_cache: None,
-    };
+    let ctx = build_app_context(false);
     commands::search::run(args, &ctx, fmt)
 }
 
@@ -88,14 +101,7 @@ fn run_report(
     cmd: crate::commands::report::ReportCmd,
     fmt: output::Format,
 ) -> Result<(), SiftError> {
-    let file_cache = open_file_cache();
-    let records_cache = open_records_cache(file_cache.as_ref());
-
-    let app = AppContext {
-        http: http::HttpClient::new(),
-        file_cache,
-        records_cache,
-    };
+    let app = build_app_context(true);
     let sources = vec![
         sources::eastmoney_financials::build(),
         sources::sina_financials::build(),
@@ -113,14 +119,7 @@ fn run_announce(
     cmd: crate::commands::announce::AnnounceCmd,
     fmt: output::Format,
 ) -> Result<(), SiftError> {
-    let file_cache = open_file_cache();
-    let records_cache = open_records_cache(file_cache.as_ref());
-
-    let ctx = AppContext {
-        http: http::HttpClient::new(),
-        file_cache,
-        records_cache,
-    };
+    let ctx = build_app_context(true);
     commands::announce::run(cmd, &ctx, fmt)
 }
 
@@ -133,13 +132,6 @@ fn run_extract(
     args: crate::commands::extract::ExtractArgs,
     fmt: output::Format,
 ) -> Result<(), SiftError> {
-    let file_cache = open_file_cache();
-    let records_cache = open_records_cache(file_cache.as_ref());
-
-    let ctx = AppContext {
-        http: http::HttpClient::new(),
-        file_cache,
-        records_cache,
-    };
+    let ctx = build_app_context(true);
     commands::extract::run(args, &ctx, fmt)
 }

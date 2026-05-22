@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use crate::app::AppContext;
+use crate::cache::atomic_write;
 use crate::cache::file::FileCache;
 use crate::error::SiftError;
 use crate::fetch::announce::AnnounceResolver;
@@ -348,9 +349,6 @@ pub fn fine(
         .map(|c| c.to_vec())
         .collect();
 
-    let pdf_path = meta.pdf_path.clone();
-    let files_for_workers = if used_cache { ctx.file_cache.as_ref() } else { None };
-
     // Pick the backend up front so workers can share one client +
     // (for OAuth mode) one access-token cache. Surface the
     // "neither mode configured" error as `OcrTokenMissing` —
@@ -359,78 +357,25 @@ pub fn fine(
     // braces.
     let client = paddleocr::build_client(&ctx.http)?;
     let backend = client.name();
-    let client_ref: &(dyn OcrClient + '_) = client.as_ref();
 
-    // Per-chunk results funnelled back over an mpsc channel. We
-    // dispatch all chunks up front and rely on the worker pool to
-    // serialise actual HTTP load to `PADDLEOCR_PARALLELISM` —
-    // `thread::scope` joins everything before we leave.
-    let mut fresh: HashMap<u32, String> = HashMap::new();
-    let mut failed: Vec<u32> = Vec::new();
-    let mut failure_reasons: Vec<String> = Vec::new();
+    let wctx = WorkerCtx {
+        pdf_path: &meta.pdf_path,
+        client: client.as_ref(),
+        image_dir,
+        page_num_width,
+        files: if used_cache { ctx.file_cache.as_ref() } else { None },
+        announce_id,
+        no_cache,
+    };
 
-    if !chunks.is_empty() {
-        let (tx, rx) = mpsc::channel::<ChunkResult>();
-        std::thread::scope(|scope| {
-            let chunks_arc: Vec<Vec<u32>> = chunks.clone();
-            let mut iter = chunks_arc.into_iter();
-            let mut in_flight = 0usize;
+    let cached_n = cached.len();
+    let api_n = missing.len();
+    let batches = chunks.len();
+    let eta_secs = (batches as u64).saturating_mul(FINE_SEC_PER_BATCH);
 
-            // Prime the pool up to PADDLEOCR_PARALLELISM.
-            while in_flight < PADDLEOCR_PARALLELISM {
-                let Some(chunk) = iter.next() else { break };
-                spawn_worker(
-                    scope,
-                    &tx,
-                    chunk,
-                    pdf_path.clone(),
-                    client_ref,
-                    image_dir.to_path_buf(),
-                    page_num_width,
-                    files_for_workers,
-                    announce_id.map(|s| s.to_owned()),
-                    no_cache,
-                );
-                in_flight += 1;
-            }
-
-            // As each chunk finishes we admit one more, keeping
-            // total in-flight ≤ PADDLEOCR_PARALLELISM until the
-            // pending queue drains.
-            while in_flight > 0 {
-                let res = rx.recv().expect("worker dropped tx without sending");
-                in_flight -= 1;
-                match res {
-                    ChunkResult::Ok(pages_md) => {
-                        for (p, md) in pages_md {
-                            fresh.insert(p, md);
-                        }
-                    }
-                    ChunkResult::Failed(chunk_pages, reason) => {
-                        failed.extend(chunk_pages);
-                        if !failure_reasons.iter().any(|r| r == &reason) {
-                            failure_reasons.push(reason);
-                        }
-                    }
-                }
-                if let Some(chunk) = iter.next() {
-                    spawn_worker(
-                        scope,
-                        &tx,
-                        chunk,
-                        pdf_path.clone(),
-                        client_ref,
-                        image_dir.to_path_buf(),
-                        page_num_width,
-                        files_for_workers,
-                        announce_id.map(|s| s.to_owned()),
-                        no_cache,
-                    );
-                    in_flight += 1;
-                }
-            }
-        });
-    }
+    // Tier 2: dispatch missing chunks to the worker pool. chunks is
+    // moved in, so capture the counts above first.
+    let (fresh, mut failed, failure_reasons) = run_pool(chunks, &wctx);
 
     failed.sort_unstable();
     failed.dedup();
@@ -446,11 +391,6 @@ pub fn fine(
         })
         .collect();
     merged.sort_by_key(|(p, _)| *p);
-
-    let cached_n = cached.len();
-    let api_n = missing.len();
-    let batches = chunks.len();
-    let eta_secs = (batches as u64).saturating_mul(FINE_SEC_PER_BATCH);
 
     // Touch `doc` so the borrow checker treats this as live across
     // the call — the editor opened inside split_into_batch is
@@ -470,6 +410,83 @@ pub fn fine(
     })
 }
 
+/// Immutable configuration shared across every worker in one `fine()` call.
+/// Bundles the per-run context so `run_pool`, `spawn_worker`, and
+/// `run_chunk` each take a single `&WorkerCtx` instead of repeating
+/// the same 7-parameter list.
+struct WorkerCtx<'env> {
+    pdf_path: &'env Path,
+    client: &'env (dyn OcrClient + 'env),
+    image_dir: &'env Path,
+    page_num_width: usize,
+    files: Option<&'env FileCache>,
+    announce_id: Option<&'env str>,
+    no_cache: bool,
+}
+
+/// Drives the bounded worker pool that dispatches OCR chunks to
+/// PaddleOCR. Primes up to `PADDLEOCR_PARALLELISM` workers, then
+/// admits one new chunk for every completion until the queue drains.
+/// `thread::scope` joins all workers before returning, so no thread
+/// outlives the call.
+///
+/// Returns `(fresh, failed, failure_reasons)`:
+/// - `fresh`: page → markdown for every successfully OCR'd page.
+/// - `failed`: page numbers that failed (unsorted; caller deduplicates).
+/// - `failure_reasons`: deduplicated error messages across all failed chunks.
+fn run_pool<'env>(
+    chunks: Vec<Vec<u32>>,
+    ctx: &'env WorkerCtx<'env>,
+) -> (HashMap<u32, String>, Vec<u32>, Vec<String>) {
+    let mut fresh: HashMap<u32, String> = HashMap::new();
+    let mut failed: Vec<u32> = Vec::new();
+    let mut failure_reasons: Vec<String> = Vec::new();
+
+    if chunks.is_empty() {
+        return (fresh, failed, failure_reasons);
+    }
+
+    let (tx, rx) = mpsc::channel::<ChunkResult>();
+    std::thread::scope(|scope| {
+        let mut iter = chunks.into_iter();
+        let mut in_flight = 0usize;
+
+        // Prime the pool up to PADDLEOCR_PARALLELISM.
+        while in_flight < PADDLEOCR_PARALLELISM {
+            let Some(chunk) = iter.next() else { break };
+            spawn_worker(scope, &tx, chunk, ctx);
+            in_flight += 1;
+        }
+
+        // As each chunk finishes, admit one more — keeping
+        // total in-flight ≤ PADDLEOCR_PARALLELISM until the
+        // pending queue drains.
+        while in_flight > 0 {
+            let res = rx.recv().expect("worker dropped tx without sending");
+            in_flight -= 1;
+            match res {
+                ChunkResult::Ok(pages_md) => {
+                    for (p, md) in pages_md {
+                        fresh.insert(p, md);
+                    }
+                }
+                ChunkResult::Failed(chunk_pages, reason) => {
+                    failed.extend(chunk_pages);
+                    if !failure_reasons.iter().any(|r| r == &reason) {
+                        failure_reasons.push(reason);
+                    }
+                }
+            }
+            if let Some(chunk) = iter.next() {
+                spawn_worker(scope, &tx, chunk, ctx);
+                in_flight += 1;
+            }
+        }
+    });
+
+    (fresh, failed, failure_reasons)
+}
+
 enum ChunkResult {
     Ok(Vec<(u32, String)>),
     /// Chunk failed atomically. Carries the failing page numbers
@@ -480,31 +497,15 @@ enum ChunkResult {
     Failed(Vec<u32>, String),
 }
 
-#[allow(clippy::too_many_arguments)]
 fn spawn_worker<'scope>(
     scope: &'scope std::thread::Scope<'scope, '_>,
     tx: &mpsc::Sender<ChunkResult>,
     chunk: Vec<u32>,
-    pdf_path: PathBuf,
-    client: &'scope (dyn OcrClient + 'scope),
-    image_dir: PathBuf,
-    page_num_width: usize,
-    files: Option<&'scope FileCache>,
-    announce_id: Option<String>,
-    no_cache: bool,
+    ctx: &'scope WorkerCtx<'scope>,
 ) {
     let tx = tx.clone();
     scope.spawn(move || {
-        let result = run_chunk(
-            &chunk,
-            &pdf_path,
-            client,
-            &image_dir,
-            page_num_width,
-            files,
-            announce_id.as_deref(),
-            no_cache,
-        );
+        let result = run_chunk(&chunk, ctx);
         let msg = match result {
             Ok(pages_md) => ChunkResult::Ok(pages_md),
             Err(e) => ChunkResult::Failed(chunk, e.to_string()),
@@ -513,43 +514,27 @@ fn spawn_worker<'scope>(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_chunk(
-    chunk: &[u32],
-    pdf_path: &Path,
-    client: &dyn OcrClient,
-    image_dir: &Path,
-    page_num_width: usize,
-    files: Option<&FileCache>,
-    announce_id: Option<&str>,
-    no_cache: bool,
-) -> Result<Vec<(u32, String)>, SiftError> {
+fn run_chunk(chunk: &[u32], ctx: &WorkerCtx) -> Result<Vec<(u32, String)>, SiftError> {
     // Each worker opens its own PdfDoc — pdf_oxide's reader is
     // not `Sync` across threads, and split_into_batch needs the
     // doc anyway. The cost is one extra parse per chunk, dwarfed
     // by the OCR HTTP round-trip.
-    let doc = PdfDoc::open(pdf_path)?;
+    let doc = PdfDoc::open(ctx.pdf_path)?;
     let pdf_bytes = doc.split_into_batch(chunk)?;
-    let results = client.parse_batch(&pdf_bytes)?;
+    let results = ctx.client.parse_batch(&pdf_bytes)?;
     if results.len() != chunk.len() {
         return Err(SiftError::Internal(format!(
             "{} backend: expected {} results, got {}",
-            client.name(),
+            ctx.client.name(),
             chunk.len(),
             results.len(),
         )));
     }
     let mut out = Vec::with_capacity(chunk.len());
     for (idx, page) in chunk.iter().copied().enumerate() {
-        let md = land_ocr_page(
-            &results[idx],
-            page,
-            page_num_width,
-            image_dir,
-            no_cache,
-        )?;
-        if let (Some(id), Some(fc)) = (announce_id, files) {
-            ocr_write(fc, id, page, page_num_width, &md)?;
+        let md = land_ocr_page(&results[idx], page, ctx.page_num_width, ctx.image_dir, ctx.no_cache)?;
+        if let (Some(id), Some(fc)) = (ctx.announce_id, ctx.files) {
+            ocr_write(fc, id, page, ctx.page_num_width, &md)?;
         }
         out.push((page, md));
     }
@@ -671,26 +656,6 @@ fn land_images(
         lines.push(format!("![]({})", abs.display()));
     }
     Ok(lines)
-}
-
-/// Sibling `.tmp` + `rename` atomic write. Mirrors `FileCache::write`
-/// semantics but operates against an arbitrary path so it works for
-/// user-supplied `--image-dir` outside the sift cache root.
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), SiftError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| SiftError::Io(format!("no parent dir for {}", path.display())))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|e| SiftError::Io(format!("mkdir -p {}: {e}", parent.display())))?;
-    let tmp = path.with_extension(format!(
-        "{}.tmp",
-        path.extension().and_then(|s| s.to_str()).unwrap_or("part")
-    ));
-    std::fs::write(&tmp, bytes)
-        .map_err(|e| SiftError::Io(format!("write {}: {e}", tmp.display())))?;
-    std::fs::rename(&tmp, path)
-        .map_err(|e| SiftError::Io(format!("rename to {}: {e}", path.display())))?;
-    Ok(())
 }
 
 /// Emit one consolidated `[warn]` block after the fast loop finishes.
@@ -894,14 +859,6 @@ mod tests {
         assert_eq!(digits(10), 2);
         assert_eq!(digits(143), 3);
         assert_eq!(digits(1000), 4);
-    }
-
-    #[test]
-    fn atomic_write_creates_parent_and_writes_bytes() {
-        let tmp = TempDir::new().unwrap();
-        let p = tmp.path().join("a/b/c/file.bin");
-        atomic_write(&p, b"hello").unwrap();
-        assert_eq!(std::fs::read(&p).unwrap(), b"hello");
     }
 
     #[test]

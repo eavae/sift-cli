@@ -26,6 +26,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::domain::{FinancialRow, Statement, Symbol, Unit};
 use crate::error::SiftError;
+use crate::output::io_err;
 use crate::output::tabular::{render_tabular, TabularView};
 use crate::output::Format;
 
@@ -449,10 +450,6 @@ fn format_number(v: f64, unit: Unit) -> String {
             }
         }
     }
-}
-
-fn io_err(e: std::io::Error) -> SiftError {
-    SiftError::Internal(format!("io: {e}"))
 }
 
 // ---------------------------------------------------------------------------

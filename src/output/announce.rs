@@ -90,7 +90,7 @@ pub fn to_type_row(c: &Category) -> TypeRow {
 pub fn render_tabled<W: Write>(out: &mut W, rows: &[TypeRow]) -> Result<(), SiftError> {
     let mut t = Table::new(rows);
     t.with(Style::empty()).with(Padding::new(0, 2, 0, 0));
-    writeln!(out, "{t}").map_err(|e| SiftError::Internal(format!("io: {e}")))?;
+    writeln!(out, "{t}").map_err(crate::output::io_err)?;
     Ok(())
 }
 
@@ -125,7 +125,7 @@ pub fn render_list_table<W: Write>(
     let projected: Vec<ListTableRow> = rows.iter().map(ListTableRow::from_row).collect();
     let mut t = Table::new(&projected);
     t.with(Style::empty()).with(Padding::new(0, 2, 0, 0));
-    writeln!(out, "{t}").map_err(|e| SiftError::Internal(format!("io: {e}")))?;
+    writeln!(out, "{t}").map_err(crate::output::io_err)?;
     Ok(())
 }
 
@@ -261,7 +261,7 @@ pub fn render_show_kv<W: Write>(
     let key_w = pairs.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
     for (k, v) in &pairs {
         writeln!(out, "{k:<key_w$}  {v}")
-            .map_err(|e| SiftError::Internal(format!("io: {e}")))?;
+            .map_err(crate::output::io_err)?;
     }
     Ok(())
 }

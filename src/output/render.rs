@@ -1,4 +1,5 @@
 use crate::error::SiftError;
+use crate::output::io_err;
 use crate::output::tabular::{render_tabular, TabularView};
 use serde::Serialize;
 use std::io::Write;
@@ -121,10 +122,6 @@ fn render_ndjson<W: Write, R: RenderRow>(out: &mut W, rows: &[R]) -> Result<(), 
         out.write_all(b"\n").map_err(io_err)?;
     }
     Ok(())
-}
-
-fn io_err(e: std::io::Error) -> SiftError {
-    SiftError::Internal(format!("io: {e}"))
 }
 
 #[cfg(test)]

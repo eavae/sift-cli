@@ -5,6 +5,15 @@ pub mod tabular;
 
 pub use render::{render, RenderRow};
 
+use crate::error::SiftError;
+
+/// Convert a [`std::io::Error`] into [`SiftError::Internal`] with a
+/// consistent prefix. Shared by every output module so `io: …`
+/// messages look the same everywhere.
+pub(crate) fn io_err(e: std::io::Error) -> SiftError {
+    SiftError::Internal(format!("io: {e}"))
+}
+
 /// Output format. `Table` is the default but is **not** a clap value
 /// — `--format table` is rejected by [`crate::cli::parse_user_format`]
 /// with a hint pointing back to "omit the flag for the default table".

@@ -129,7 +129,6 @@ impl<'a> AnnounceResolver<'a> {
     /// category filter" — the caller (via `input::expand_categories`)
     /// already normalized aggregates like `定期报告` into the four
     /// constituent keys.
-    #[allow(clippy::too_many_arguments)]
     pub fn list(
         &self,
         symbols: Vec<ResolvedSymbol>,

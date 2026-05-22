@@ -30,6 +30,7 @@
 use std::io::Write;
 
 use crate::error::SiftError;
+use crate::output::io_err;
 
 /// Views that emit a flat TSV body declare their schema here. The only
 /// approved consumer is [`render_tabular`]; never hand-roll a TSV header
@@ -96,10 +97,6 @@ fn check_cell(s: &str) -> Result<(), SiftError> {
         ));
     }
     Ok(())
-}
-
-fn io_err(e: std::io::Error) -> SiftError {
-    SiftError::Internal(format!("io: {e}"))
 }
 
 #[cfg(test)]

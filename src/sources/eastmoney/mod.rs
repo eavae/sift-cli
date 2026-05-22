@@ -22,8 +22,11 @@
 pub mod bars;
 pub mod quote;
 
-pub use bars::{bars_daily_with_base, BarsQuery, EmBarsUrls};
-pub use quote::{quote_with_base, EmQuoteUrls};
+// Public re-exports kept minimal — production code goes through
+// the `build()` constructors in `bars.rs` / `quote.rs` (returning
+// `Box<dyn BarsSource>` / `Box<dyn QuoteSource>`). The concrete
+// types are still pub-visible through their modules for tests that
+// want to inject a custom base URL.
 
 use crate::domain::market::Market;
 use crate::domain::Symbol;

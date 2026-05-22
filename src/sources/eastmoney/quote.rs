@@ -35,6 +35,7 @@ use crate::domain::quote::QuoteRow;
 use crate::domain::Symbol;
 use crate::error::SiftError;
 use crate::http::HttpClient;
+use crate::sources::quote_source::QuoteSource;
 
 use super::{em_str_to_f64, em_str_to_i64, require_f64, secid};
 
@@ -82,6 +83,44 @@ impl EmQuoteUrls {
             quote_base: std::env::var("SIFT_EM_QUOTE_BASE")
                 .unwrap_or_else(|_| DEFAULT_QUOTE_BASE.into()),
         }
+    }
+}
+
+/// EM quote source — one instance per process; the trait impl in
+/// turn routes `fetch` through [`quote_with_base`].
+#[derive(Debug, Clone)]
+pub struct EastmoneyQuoteSource {
+    pub quote_base: String,
+}
+
+impl EastmoneyQuoteSource {
+    pub fn from_env() -> Self {
+        Self {
+            quote_base: EmQuoteUrls::from_env().quote_base,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_base(base: impl Into<String>) -> Self {
+        Self {
+            quote_base: base.into(),
+        }
+    }
+}
+
+/// `fetch::quote` calls this to build the registered source list in
+/// `main::run_quote` — mirrors `eastmoney::bars::build`.
+pub fn build() -> Box<dyn QuoteSource> {
+    Box::new(EastmoneyQuoteSource::from_env())
+}
+
+impl QuoteSource for EastmoneyQuoteSource {
+    fn name(&self) -> &'static str {
+        "eastmoney"
+    }
+
+    fn quote(&self, symbol: &Symbol, http: &HttpClient) -> Result<QuoteRow, SiftError> {
+        quote_with_base(http, symbol, &self.quote_base)
     }
 }
 
@@ -289,6 +328,25 @@ mod tests {
         let body = em_body("贵州茅台").replace("\"f57\":\"600519\"", "\"f57\":\"600520\"");
         let err = parse(body.as_bytes(), &sym("600519", Market::CnA)).unwrap_err();
         assert!(matches!(err, SiftError::Parse(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn source_trait_routes_to_quote_with_base() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/api/qt/stock/get")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body(em_body("贵州茅台"))
+            .expect_at_least(1)
+            .create();
+        let src = EastmoneyQuoteSource::with_base(server.url());
+        assert_eq!(src.name(), "eastmoney");
+        let row = src
+            .quote(&sym("600519", Market::CnA), &HttpClient::new())
+            .unwrap();
+        assert_eq!(row.name, "贵州茅台");
+        m.assert();
     }
 
     #[test]

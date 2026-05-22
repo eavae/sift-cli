@@ -1,13 +1,21 @@
-//! Row type for `sift bars` — one daily K-line bar for one symbol
-//! (F5 story-02).
+//! Row type for `sift bars` — one historical K-line bar for one
+//! symbol (F5 story-02 + story-03).
 //!
-//! Same shape as [`crate::domain::quote::QuoteRow`]: plain data plus
-//! a `RenderRow` impl. Schema, column order, and unit normalization
-//! follow the output schema table in `docs/f5-realtime/README.md` —
-//! `symbol` is the universal code, `date` is ISO `YYYY-MM-DD`, price
-//! fields are already divided by 100 (yuan), `volume` is multiplied
-//! by 100 (shares), and `adjust` takes the literals
-//! `none` / `pre` / `post`.
+//! Schema and unit normalization follow the output table in
+//! `docs/f5-realtime/README.md`. `symbol` is the universal code,
+//! `date` is ISO `YYYY-MM-DD`, price fields are yuan (divided by
+//! 100 from EM's raw cents form when applicable), `volume` is in
+//! shares (multiplied by 100 from the upstream "hands" unit), and
+//! `adjust` carries `none` / `pre` / `post` as a literal so a flat
+//! multi-symbol TSV stays self-describing.
+//!
+//! `turnover_pct` was intentionally dropped: it requires the
+//! current share-outstanding count, which neither Tencent nor EM
+//! returns inside the kline payload, so reporting it would require
+//! a second per-symbol HTTP call. The remaining derived fields
+//! (`amount` / `pct_change` / `change` / `amplitude_pct`) are either
+//! reported natively (EM) or computed client-side from OHLCV
+//! (Tencent) — see each source for the exact rules.
 
 use serde::Serialize;
 
@@ -15,8 +23,9 @@ use crate::output::RenderRow;
 
 /// Adjustment mode. Literal values line up with the CLI flag
 /// `--adjust none|pre|post` and are also stored in `BarRow.adjust`
-/// (per-row, so a flat multi-symbol TSV stays self-describing). The
-/// `fqt` mapping for EM lives in `sources::eastmoney::bars`.
+/// (per-row, so a flat multi-symbol TSV stays self-describing).
+/// Each source maps these to its own native parameter (EM's `fqt`
+/// or Tencent's `qfq`/`hfq`/`bfq`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Adjust {
@@ -35,6 +44,45 @@ impl Adjust {
     }
 }
 
+/// Bar period. Only daily / weekly / monthly are supported in the
+/// first release — Tencent does not serve quarterly / yearly from
+/// the kline endpoint, and we deliberately do not synthesize them
+/// via client-side resample (`pandas.DataFrame.resample('Q'/'Y')`
+/// is the documented downstream path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Period {
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl Period {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Period::Daily => "daily",
+            Period::Weekly => "weekly",
+            Period::Monthly => "monthly",
+        }
+    }
+}
+
+/// Canonical input to the bars data layer. Both EM and Tencent
+/// share this shape — the `fetch::bars` dispatcher passes the same
+/// struct down to whichever [`crate::sources::bars_source::BarsSource`]
+/// is selected. Keeping the query in `domain/` (rather than
+/// duplicated per source) is the same pattern F2 uses with
+/// [`crate::domain::Query`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct BarsQuery {
+    pub symbol: crate::domain::Symbol,
+    pub start: Option<time::Date>,
+    pub end: Option<time::Date>,
+    pub limit: Option<usize>,
+    pub adjust: Adjust,
+    pub period: Period,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BarRow {
     pub symbol: String,
@@ -48,8 +96,8 @@ pub struct BarRow {
     pub pct_change: f64,
     pub change: f64,
     pub amplitude_pct: f64,
-    pub turnover_pct: f64,
     pub adjust: Adjust,
+    pub period: Period,
     pub source: &'static str,
 }
 
@@ -67,8 +115,8 @@ impl RenderRow for BarRow {
             "pct_change",
             "change",
             "amplitude_pct",
-            "turnover_pct",
             "adjust",
+            "period",
             "source",
         ]
     }
@@ -86,8 +134,8 @@ impl RenderRow for BarRow {
             format!("{:.2}", self.pct_change),
             format!("{:.2}", self.change),
             format!("{:.2}", self.amplitude_pct),
-            format!("{:.2}", self.turnover_pct),
             self.adjust.as_str().to_string(),
+            self.period.as_str().to_string(),
             self.source.to_string(),
         ]
     }
@@ -110,9 +158,9 @@ mod tests {
             pct_change: 0.45,
             change: 5.95,
             amplitude_pct: 1.54,
-            turnover_pct: 0.29,
             adjust: Adjust::Pre,
-            source: "eastmoney",
+            period: Period::Daily,
+            source: "tencent",
         }
     }
 
@@ -124,8 +172,12 @@ mod tests {
         assert_eq!(h[1], "date");
         assert_eq!(h[2], "open");
         assert_eq!(h[5], "close");
-        assert_eq!(h[12], "adjust");
+        assert_eq!(h[11], "adjust");
+        assert_eq!(h[12], "period");
         assert_eq!(h[13], "source");
+        // turnover_pct was removed in F5 follow-up — no longer in
+        // the header set.
+        assert!(!h.contains(&"turnover_pct"));
     }
 
     #[test]
@@ -138,8 +190,9 @@ mod tests {
         assert_eq!(cells[2], "1325.00");
         assert_eq!(cells[5], "1330.00");
         assert_eq!(cells[6], "358060000");
-        assert_eq!(cells[12], "pre");
-        assert_eq!(cells[13], "eastmoney");
+        assert_eq!(cells[11], "pre");
+        assert_eq!(cells[12], "daily");
+        assert_eq!(cells[13], "tencent");
     }
 
     #[test]
@@ -147,5 +200,12 @@ mod tests {
         assert_eq!(Adjust::None.as_str(), "none");
         assert_eq!(Adjust::Pre.as_str(), "pre");
         assert_eq!(Adjust::Post.as_str(), "post");
+    }
+
+    #[test]
+    fn period_as_str_matches_cli_literals() {
+        assert_eq!(Period::Daily.as_str(), "daily");
+        assert_eq!(Period::Weekly.as_str(), "weekly");
+        assert_eq!(Period::Monthly.as_str(), "monthly");
     }
 }

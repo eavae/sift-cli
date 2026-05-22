@@ -53,7 +53,6 @@ const GROUP_HEADERS: &[&str] = &[
     "pct_change",
     "change",
     "amplitude_pct",
-    "turnover_pct",
 ];
 
 /// Render multi-symbol bars as one aligned table per symbol. `rows`
@@ -68,9 +67,14 @@ pub fn render_grouped<W: Write>(out: &mut W, rows: &[BarRow]) -> Result<(), Sift
         }
         let g = &groups[sym];
         let head = g.first().expect("group is non-empty by construction");
+        // Group header carries the per-symbol facts hoisted out of
+        // the data rows: `adjust`, `period`, and `source`. The data
+        // rows themselves stay narrow (10 columns: date + OHLC +
+        // volume + amount + the three diff fields).
         writeln!(
             out,
-            "── {sym}  adjust={adj}  source={src} ───",
+            "── {sym}  period={per}  adjust={adj}  source={src} ───",
+            per = head.period.as_str(),
             adj = head.adjust.as_str(),
             src = head.source,
         )
@@ -109,7 +113,6 @@ fn row_subset(r: &BarRow) -> Vec<String> {
         format!("{:.2}", r.pct_change),
         format!("{:.2}", r.change),
         format!("{:.2}", r.amplitude_pct),
-        format!("{:.2}", r.turnover_pct),
     ]
 }
 
@@ -171,7 +174,7 @@ fn write_row<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::bars::Adjust;
+    use crate::domain::bars::{Adjust, Period};
 
     fn bar(sym: &str, date: &str) -> BarRow {
         BarRow {
@@ -186,9 +189,9 @@ mod tests {
             pct_change: 2.0,
             change: 3.0,
             amplitude_pct: 1.0,
-            turnover_pct: 0.1,
             adjust: Adjust::Pre,
-            source: "eastmoney",
+            period: Period::Daily,
+            source: "tencent",
         }
     }
 
@@ -210,12 +213,15 @@ mod tests {
     }
 
     #[test]
-    fn group_header_carries_adjust_and_source() {
+    fn group_header_carries_period_adjust_and_source() {
         let rows = vec![bar("600519.CN-A", "2024-01-15")];
         let mut buf = Vec::<u8>::new();
         render_grouped(&mut buf, &rows).unwrap();
         let s = String::from_utf8(buf).unwrap();
-        assert!(s.contains("── 600519.CN-A  adjust=pre  source=eastmoney ───"), "got:\n{s}");
+        assert!(
+            s.contains("── 600519.CN-A  period=daily  adjust=pre  source=tencent ───"),
+            "got:\n{s}"
+        );
     }
 
     #[test]
@@ -229,7 +235,7 @@ mod tests {
         // header).
         let data_line = s.lines().last().unwrap();
         assert!(!data_line.contains("600519"), "symbol column leaked into row: {data_line:?}");
-        assert!(!data_line.contains("eastmoney"), "source column leaked: {data_line:?}");
+        assert!(!data_line.contains("tencent"), "source column leaked: {data_line:?}");
         assert!(!data_line.contains("pre "), "adjust column leaked: {data_line:?}");
         // Date and numbers are present.
         assert!(data_line.contains("2024-01-15"));

@@ -1,4 +1,4 @@
-//! EM `kline/get` daily K-line integration (F5 story-02).
+//! EM `kline/get` historical K-line integration (F5 story-02).
 //!
 //! Endpoint: `{base}/api/qt/stock/kline/get` returns plain JSON:
 //!
@@ -16,82 +16,109 @@
 //! `open` is followed by `close`, not by `high`. sift reorders the
 //! output to standard OHLC (see [`crate::domain::bars`]).
 //!
+//! `turnover_pct` is parsed off the wire (field 11) but **dropped**
+//! before producing [`BarRow`] — the unified bars schema does not
+//! carry it. See `domain/bars.rs` doc for why.
+//!
 //! CN A-share queries use the `beg`/`end` date range parameters; HK
 //! and US use `lmt=1000000` to grab the whole history. The branch
 //! is taken inside this module; callers only provide a [`BarsQuery`].
 
 use serde_json::Value;
 
-use crate::domain::bars::{Adjust, BarRow};
+use crate::domain::bars::{Adjust, BarRow, BarsQuery, Period};
 use crate::domain::market::Market;
 use crate::domain::Symbol;
 use crate::error::SiftError;
 use crate::http::HttpClient;
+use crate::sources::bars_source::BarsSource;
 
 use super::secid;
 
 pub const DEFAULT_BARS_BASE: &str = "https://push2his.eastmoney.com";
 
 const UT: &str = "7eea3edcaed734bea9cbfc24409ed989";
-/// Daily K-line (README "data source & protocol" §`klt=101`).
-const KLT_DAILY: &str = "101";
 /// "Grab-all" lmt ceiling. EM accepts arbitrarily large integers;
-/// a six-figure value covers any single instrument's history (CN A-
-/// share runs ≈ 7,500 trading days over 30+ years; HK similar; long-
-/// running US tickers around 15,000 trading days at most).
+/// a six-figure value covers any single instrument's history.
 const LMT_ALL: &str = "1000000";
 
+/// EM bars source — one instance per process; holds the `bars_base`
+/// URL so tests can inject mockito addresses while production reads
+/// `SIFT_EM_BARS_BASE` from the environment.
 #[derive(Debug, Clone)]
-pub struct EmBarsUrls {
+pub struct EastmoneyBarsSource {
     pub bars_base: String,
 }
 
-impl EmBarsUrls {
+impl EastmoneyBarsSource {
     pub fn from_env() -> Self {
         Self {
             bars_base: std::env::var("SIFT_EM_BARS_BASE")
                 .unwrap_or_else(|_| DEFAULT_BARS_BASE.into()),
         }
     }
-}
 
-/// Query parameters. `start` / `end` (ISO dates) are inclusive and
-/// applied client-side; `limit` selects the most recent N trading
-/// days. The `limit`-vs-`start`/`end` mutual exclusion is enforced
-/// by clap in the command layer, so we do not re-validate here.
-#[derive(Debug, Clone)]
-pub struct BarsQuery {
-    pub symbol: Symbol,
-    pub start: Option<time::Date>,
-    pub end: Option<time::Date>,
-    pub limit: Option<usize>,
-    pub adjust: Adjust,
-}
-
-impl BarsQuery {
-    fn fqt(&self) -> &'static str {
-        match self.adjust {
-            Adjust::None => "0",
-            Adjust::Pre => "1",
-            Adjust::Post => "2",
+    #[cfg(test)]
+    pub fn with_base(base: impl Into<String>) -> Self {
+        Self {
+            bars_base: base.into(),
         }
     }
 }
 
-/// Fetch a symbol's daily K-line series and truncate client-side to
-/// the requested range.
-pub fn bars_daily_with_base(
+/// `fetch::bars` calls this to build the registered source list in
+/// `main::run_bars` — mirrors `sources::eastmoney_financials::build()`.
+pub fn build() -> Box<dyn BarsSource> {
+    Box::new(EastmoneyBarsSource::from_env())
+}
+
+impl BarsSource for EastmoneyBarsSource {
+    fn name(&self) -> &'static str {
+        "eastmoney"
+    }
+
+    fn fetch(&self, q: &BarsQuery, http: &HttpClient) -> Result<Vec<BarRow>, SiftError> {
+        bars_with_base(http, q, &self.bars_base)
+    }
+}
+
+fn fqt(adjust: Adjust) -> &'static str {
+    match adjust {
+        Adjust::None => "0",
+        Adjust::Pre => "1",
+        Adjust::Post => "2",
+    }
+}
+
+/// EM `klt` parameter — 101 daily, 102 weekly, 103 monthly. The
+/// mapping for quarterly (104) and yearly (106) is intentionally
+/// not exposed: the unified bars schema only supports the three
+/// shared periods.
+fn klt(period: Period) -> &'static str {
+    match period {
+        Period::Daily => "101",
+        Period::Weekly => "102",
+        Period::Monthly => "103",
+    }
+}
+
+/// Fetch a symbol's K-line series and truncate client-side to the
+/// requested range. `bars_with_base` is the test seam — production
+/// code goes through [`EastmoneyBarsSource::fetch`], which routes
+/// to this function with the source's stored base URL.
+pub fn bars_with_base(
     http: &HttpClient,
     q: &BarsQuery,
     base: &str,
 ) -> Result<Vec<BarRow>, SiftError> {
     let mut url = format!(
-        "{base}/api/qt/stock/kline/get?secid={secid}&klt={KLT_DAILY}&fqt={fqt}\
+        "{base}/api/qt/stock/kline/get?secid={secid}&klt={klt}&fqt={fqt}\
          &fields1=f1,f2,f3,f4,f5,f6\
          &fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61\
          &ut={UT}",
         secid = secid(&q.symbol),
-        fqt = q.fqt(),
+        klt = klt(q.period),
+        fqt = fqt(q.adjust),
     );
     // CN A-share uses beg/end for ranges. EM's HK/US endpoints honor
     // beg/end unreliably, so we always use the `lmt` "grab-all"
@@ -108,7 +135,7 @@ pub fn bars_daily_with_base(
     }
 
     let bytes = http.get_bytes(&url)?;
-    let rows = parse(&bytes, &q.symbol, q.adjust)?;
+    let rows = parse(&bytes, &q.symbol, q.adjust, q.period)?;
     Ok(apply_filters(rows, q))
 }
 
@@ -121,7 +148,12 @@ fn format_yyyymmdd(d: time::Date) -> String {
     )
 }
 
-fn parse(bytes: &[u8], symbol: &Symbol, adjust: Adjust) -> Result<Vec<BarRow>, SiftError> {
+fn parse(
+    bytes: &[u8],
+    symbol: &Symbol,
+    adjust: Adjust,
+    period: Period,
+) -> Result<Vec<BarRow>, SiftError> {
     let v: Value = serde_json::from_slice(bytes)
         .map_err(|e| SiftError::Parse(format!("EM kline/get not JSON: {e}")))?;
     let data = v
@@ -129,10 +161,6 @@ fn parse(bytes: &[u8], symbol: &Symbol, adjust: Adjust) -> Result<Vec<BarRow>, S
         .and_then(Value::as_object)
         .ok_or_else(|| SiftError::Parse("EM kline/get: missing `data` object".into()))?;
 
-    // Empty klines with no name = EM does not recognize this symbol
-    // (returns HTTP 200 but `klines` is an empty array and `name`
-    // is missing/empty). Surface as `NotFound` so the command layer
-    // can classify and aggregate appropriately.
     let name = data
         .get("name")
         .and_then(Value::as_str)
@@ -168,15 +196,23 @@ fn parse(bytes: &[u8], symbol: &Symbol, adjust: Adjust) -> Result<Vec<BarRow>, S
         let s = entry.as_str().ok_or_else(|| {
             SiftError::Parse(format!("EM kline entry not a string: {entry:?}"))
         })?;
-        rows.push(parse_one(s, &display_symbol, adjust)?);
+        rows.push(parse_one(s, &display_symbol, adjust, period)?);
     }
     Ok(rows)
 }
 
-fn parse_one(csv: &str, display_symbol: &str, adjust: Adjust) -> Result<BarRow, SiftError> {
+fn parse_one(
+    csv: &str,
+    display_symbol: &str,
+    adjust: Adjust,
+    period: Period,
+) -> Result<BarRow, SiftError> {
     // EM's raw order:
     //   date, open, close, high, low, volume(hands), amount,
     //   amplitude%, pct_change%, change, turnover%
+    // We read all 11 fields then drop turnover% to match the
+    // unified schema. amplitude_pct and the diff fields are kept
+    // from native EM values.
     let fields: Vec<&str> = csv.split(',').collect();
     if fields.len() < 11 {
         return Err(SiftError::Parse(format!(
@@ -194,7 +230,7 @@ fn parse_one(csv: &str, display_symbol: &str, adjust: Adjust) -> Result<BarRow, 
     let amplitude_pct: f64 = parse_num(fields[7], "amplitude_pct")?;
     let pct_change: f64 = parse_num(fields[8], "pct_change")?;
     let change: f64 = parse_num(fields[9], "change")?;
-    let turnover_pct: f64 = parse_num(fields[10], "turnover_pct")?;
+    // fields[10] is EM's turnover% — discarded.
 
     Ok(BarRow {
         symbol: display_symbol.to_string(),
@@ -208,8 +244,8 @@ fn parse_one(csv: &str, display_symbol: &str, adjust: Adjust) -> Result<BarRow, 
         pct_change,
         change,
         amplitude_pct,
-        turnover_pct,
         adjust,
+        period,
         source: "eastmoney",
     })
 }
@@ -279,11 +315,12 @@ mod tests {
     }
 
     #[test]
-    fn ochl_is_reordered_to_ohlc() {
+    fn ochl_is_reordered_to_ohlc_and_turnover_is_dropped() {
         // EM raw: date, open=10, close=15, high=20, low=8, vol=100,
-        //         amount=1000, amplitude=1, pct=50, change=5, turnover=0.1
+        //         amount=1000, amplitude=1, pct=50, change=5,
+        //         turnover=0.1  ← turnover dropped from BarRow
         let body = em_body(&["2024-01-02,10,15,20,8,100,1000,1,50,5,0.1"]);
-        let rows = parse(body.as_bytes(), &cn_a("600519"), Adjust::None).unwrap();
+        let rows = parse(body.as_bytes(), &cn_a("600519"), Adjust::None, Period::Daily).unwrap();
         assert_eq!(rows.len(), 1);
         let r = &rows[0];
         assert_eq!(r.symbol, "600519.CN-A");
@@ -292,28 +329,67 @@ mod tests {
         assert!((r.high - 20.0).abs() < 1e-9);
         assert!((r.low - 8.0).abs() < 1e-9);
         assert!((r.close - 15.0).abs() < 1e-9);
-        // hands → shares: 100 × 100 = 10000
-        assert_eq!(r.volume, 10_000);
+        assert_eq!(r.volume, 10_000); // hands → shares
         assert!((r.amount - 1000.0).abs() < 1e-9);
         assert!((r.pct_change - 50.0).abs() < 1e-9);
         assert!((r.change - 5.0).abs() < 1e-9);
         assert!((r.amplitude_pct - 1.0).abs() < 1e-9);
-        assert!((r.turnover_pct - 0.1).abs() < 1e-9);
         assert_eq!(r.adjust, Adjust::None);
+        assert_eq!(r.period, Period::Daily);
+        assert_eq!(r.source, "eastmoney");
     }
 
     #[test]
     fn empty_klines_yields_not_found() {
         let body = r#"{"rc":0,"data":{"klines":[]}}"#;
-        let err = parse(body.as_bytes(), &cn_a("999999"), Adjust::None).unwrap_err();
+        let err = parse(body.as_bytes(), &cn_a("999999"), Adjust::None, Period::Daily).unwrap_err();
         assert!(matches!(err, SiftError::NotFound(_)), "got {err:?}");
     }
 
     #[test]
     fn malformed_csv_yields_parse_error() {
         let body = em_body(&["2024-01-02,10,15,20"]); // only 4 fields
-        let err = parse(body.as_bytes(), &cn_a("600519"), Adjust::None).unwrap_err();
+        let err = parse(body.as_bytes(), &cn_a("600519"), Adjust::None, Period::Daily).unwrap_err();
         assert!(matches!(err, SiftError::Parse(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn klt_mapping_per_period() {
+        assert_eq!(klt(Period::Daily), "101");
+        assert_eq!(klt(Period::Weekly), "102");
+        assert_eq!(klt(Period::Monthly), "103");
+    }
+
+    #[test]
+    fn fqt_mapping_per_adjust() {
+        assert_eq!(fqt(Adjust::None), "0");
+        assert_eq!(fqt(Adjust::Pre), "1");
+        assert_eq!(fqt(Adjust::Post), "2");
+    }
+
+    #[test]
+    fn source_trait_routes_to_bars_with_base() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/api/qt/stock/kline/get")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body(em_body(&["2024-01-15,10,15,20,8,100,1000,1,2,3,0.1"]))
+            .expect(1)
+            .create();
+        let src = EastmoneyBarsSource::with_base(server.url());
+        assert_eq!(src.name(), "eastmoney");
+        let q = BarsQuery {
+            symbol: cn_a("600519"),
+            start: None,
+            end: None,
+            limit: Some(1),
+            adjust: Adjust::Pre,
+            period: Period::Daily,
+        };
+        let rows = src.fetch(&q, &HttpClient::new()).unwrap();
+        assert_eq!(rows.len(), 1);
+        m.assert();
     }
 
     #[test]
@@ -325,6 +401,7 @@ mod tests {
             end: None,
             limit: Some(2),
             adjust: Adjust::None,
+            period: Period::Daily,
         };
         let filtered = apply_filters(rows, &q);
         assert_eq!(filtered.len(), 2);
@@ -345,6 +422,7 @@ mod tests {
             end: Some(time::Date::from_calendar_date(2024, time::Month::January, 3).unwrap()),
             limit: None,
             adjust: Adjust::None,
+            period: Period::Daily,
         };
         let filtered = apply_filters(rows, &q);
         assert_eq!(filtered.len(), 1);
@@ -364,19 +442,20 @@ mod tests {
             pct_change: 0.0,
             change: 0.0,
             amplitude_pct: 0.0,
-            turnover_pct: 0.0,
             adjust: Adjust::None,
+            period: Period::Daily,
             source: "eastmoney",
         }
     }
 
     #[test]
-    fn cn_a_uses_beg_end_params() {
+    fn cn_a_uses_beg_end_params_and_klt_for_period() {
         let mut server = mockito::Server::new();
         let m = server
             .mock("GET", "/api/qt/stock/kline/get")
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("secid".into(), "1.600519".into()),
+                mockito::Matcher::UrlEncoded("klt".into(), "102".into()), // weekly
                 mockito::Matcher::UrlEncoded("beg".into(), "20240101".into()),
                 mockito::Matcher::UrlEncoded("end".into(), "20240131".into()),
             ]))
@@ -390,10 +469,12 @@ mod tests {
             end: time::Date::from_calendar_date(2024, time::Month::January, 31).ok(),
             limit: None,
             adjust: Adjust::Pre,
+            period: Period::Weekly,
         };
-        let rows = bars_daily_with_base(&HttpClient::new(), &q, &server.url()).unwrap();
+        let rows = bars_with_base(&HttpClient::new(), &q, &server.url()).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].adjust, Adjust::Pre);
+        assert_eq!(rows[0].period, Period::Weekly);
         m.assert();
     }
 
@@ -405,6 +486,7 @@ mod tests {
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("secid".into(), "116.00700".into()),
                 mockito::Matcher::UrlEncoded("lmt".into(), "1000000".into()),
+                mockito::Matcher::UrlEncoded("klt".into(), "103".into()), // monthly
             ]))
             .with_status(200)
             .with_body(em_body(&["2024-01-15,500,510,520,490,100,1000,1,2,3,0.1"]))
@@ -416,8 +498,9 @@ mod tests {
             end: None,
             limit: None,
             adjust: Adjust::None,
+            period: Period::Monthly,
         };
-        let rows = bars_daily_with_base(&HttpClient::new(), &q, &server.url()).unwrap();
+        let rows = bars_with_base(&HttpClient::new(), &q, &server.url()).unwrap();
         assert_eq!(rows.len(), 1);
         m.assert();
     }

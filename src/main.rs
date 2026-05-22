@@ -138,36 +138,56 @@ fn run_extract(
     commands::extract::run(args, &ctx, fmt)
 }
 
-/// Build a no-cache AppContext for `sift quote` and dispatch. Quote
-/// is a fresh-every-call data source per the F5 README "cache
-/// strategy" section: realtime snapshot data has zero cache hit
-/// rate, so we do not even open the filesystem cache root (which
-/// `build_app_context(false)` would happily do for search). Both
-/// cache slots are explicitly `None`.
+/// Build a no-cache AppContext + QuoteContext for `sift quote` and
+/// dispatch. Quote is a fresh-every-call data source per the F5
+/// README "cache strategy" section: realtime snapshot data has
+/// zero cache hit rate, so we do not even open the filesystem
+/// cache root (`build_app_context(false)` would happily do that
+/// for search). Both cache slots are explicitly `None`.
+///
+/// The source list is constructed inline mirroring `run_report`'s
+/// pattern: one entry per registered upstream, stored in a `Vec`
+/// owned by this stack frame and borrowed into the context bundle
+/// passed down to the command.
 fn run_quote(
     args: crate::commands::quote::QuoteArgs,
     fmt: output::Format,
 ) -> Result<(), SiftError> {
-    let ctx = AppContext {
+    let app = AppContext {
         http: http::HttpClient::new(),
         file_cache: None,
         records_cache: None,
     };
+    let sources: Vec<Box<dyn sources::quote_source::QuoteSource>> = vec![
+        sources::eastmoney::quote::build(),
+    ];
+    let ctx = fetch::quote::QuoteContext {
+        app: &app,
+        sources: &sources,
+    };
     commands::quote::run(args, &ctx, fmt)
 }
 
-/// Build a no-cache AppContext for `sift bars` and dispatch. Same
-/// rationale as `run_quote`: per the F5 README "cache strategy"
-/// section, daily K is fast enough on EM's `kline/get` that local
-/// caching adds no value.
+/// Build a no-cache AppContext + BarsContext for `sift bars` and
+/// dispatch. Same caching rationale as `run_quote`. Tencent is
+/// listed first because `--source tencent` is the default; EM is
+/// available behind `--source eastmoney`.
 fn run_bars(
     args: crate::commands::bars::BarsArgs,
     fmt: output::Format,
 ) -> Result<(), SiftError> {
-    let ctx = AppContext {
+    let app = AppContext {
         http: http::HttpClient::new(),
         file_cache: None,
         records_cache: None,
+    };
+    let sources: Vec<Box<dyn sources::bars_source::BarsSource>> = vec![
+        sources::tencent::bars::build(),
+        sources::eastmoney::bars::build(),
+    ];
+    let ctx = fetch::bars::BarsContext {
+        app: &app,
+        sources: &sources,
     };
     commands::bars::run(args, &ctx, fmt)
 }

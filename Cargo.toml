@@ -20,9 +20,15 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 duckdb = { version = "1", features = ["bundled"] }
 blake3 = "1"
 tabled = "0.20"
+pdf_oxide = { version = "0.3", default-features = false }
+base64 = "0.22"
 
 [dev-dependencies]
 mockito = "1"
 tempfile = "3"
 filetime = "0.2"
 assert_cmd = "2"
+# `image` is pulled in transitively by pdf_oxide; we declare a direct
+# dev-dep so the auto-mode fixture builder can encode a tiny PNG
+# without hand-crafting CRCs.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

@@ -10,4 +10,5 @@
 pub mod cninfo;
 pub mod eastmoney_financials;
 pub mod financial_source;
+pub mod paddleocr;
 pub mod sina_financials;

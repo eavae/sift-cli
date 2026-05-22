@@ -39,6 +39,19 @@ pub enum SiftError {
     /// does not correspond to a known issuer.
     #[error("symbol {0:?} not in cninfo listings; check the code or wait for the list refresh")]
     MissingOrgId(String),
+    /// `sift extract --mode fine` / `--mode auto` was invoked but
+    /// no PaddleOCR credentials are configured. We raise this
+    /// **before** any HTTP request so a misconfigured run doesn't
+    /// waste a round-trip. Exit code 1 — same family as `Parse` /
+    /// `Io` since the user can fix it locally; not `Network`
+    /// because no request was attempted. Two ways to fix it,
+    /// either token or OAuth — both pairs need to be set for the
+    /// chosen mode (see `sources::paddleocr`).
+    #[error(
+        "PaddleOCR not configured. Set either (PADDLEOCR_API_BASE + PADDLEOCR_API_TOKEN) \
+         or (PADDLEOCR_API_KEY + PADDLEOCR_SECRET_KEY) in the environment"
+    )]
+    OcrTokenMissing,
 }
 
 fn format_source_failures(failures: &[(String, String)]) -> String {
@@ -57,7 +70,8 @@ impl SiftError {
             | SiftError::Parse(_)
             | SiftError::Io(_)
             | SiftError::NoApplicableSource(_)
-            | SiftError::MissingOrgId(_) => 1,
+            | SiftError::MissingOrgId(_)
+            | SiftError::OcrTokenMissing => 1,
             SiftError::Network(_) | SiftError::AllSourcesFailed(_) => 3,
             SiftError::NotFound(_) => 4,
         }
@@ -75,6 +89,7 @@ mod tests {
         assert_eq!(SiftError::Io("x".into()).exit_code(), 1);
         assert_eq!(SiftError::NoApplicableSource("x".into()).exit_code(), 1);
         assert_eq!(SiftError::MissingOrgId("x".into()).exit_code(), 1);
+        assert_eq!(SiftError::OcrTokenMissing.exit_code(), 1);
         assert_eq!(SiftError::Network("x".into()).exit_code(), 3);
         assert_eq!(
             SiftError::AllSourcesFailed(vec![("a".into(), "x".into())]).exit_code(),

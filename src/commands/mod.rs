@@ -2,5 +2,6 @@
 //! input validation, data-source plumbing, rendering, and exit code.
 
 pub mod announce;
+pub mod extract;
 pub mod report;
 pub mod search;

@@ -57,6 +57,8 @@ pub enum Command {
         #[command(subcommand)]
         cmd: crate::commands::announce::AnnounceCmd,
     },
+    /// Extract a PDF announcement (by id or local path) as Markdown
+    Extract(crate::commands::extract::ExtractArgs),
 }
 
 #[derive(clap::Args, Debug)]

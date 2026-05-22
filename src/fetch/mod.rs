@@ -40,5 +40,6 @@
 //! `copy_pdf_to`) hang off [`crate::fetch::announce::AnnounceResolver`].
 
 pub mod announce;
+pub mod extract;
 pub mod report;
 pub mod search;

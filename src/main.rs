@@ -7,6 +7,7 @@ mod error;
 mod fetch;
 mod http;
 mod output;
+mod pdf;
 mod sources;
 
 use clap::Parser;
@@ -28,6 +29,7 @@ fn main() {
         Command::Search(args) => run_search(args, fmt),
         Command::Report { cmd } => run_report(cmd, fmt),
         Command::Announce { cmd } => run_announce(cmd, fmt),
+        Command::Extract(args) => run_extract(args, fmt),
     };
 
     if let Err(e) = result {
@@ -120,4 +122,24 @@ fn run_announce(
         records_cache,
     };
     commands::announce::run(cmd, &ctx, fmt)
+}
+
+/// Build the AppContext for `sift extract`. Both cache slots are
+/// opened: F3's PDF cache lives in `file_cache` (read for the
+/// `[info] cached` line, written when story-02/04 fetch a missing
+/// PDF), and `records_cache` is reserved for stories 02/03's
+/// metadata enrichment from stdin / announce cache.
+fn run_extract(
+    args: crate::commands::extract::ExtractArgs,
+    fmt: output::Format,
+) -> Result<(), SiftError> {
+    let file_cache = open_file_cache();
+    let records_cache = open_records_cache(file_cache.as_ref());
+
+    let ctx = AppContext {
+        http: http::HttpClient::new(),
+        file_cache,
+        records_cache,
+    };
+    commands::extract::run(args, &ctx, fmt)
 }

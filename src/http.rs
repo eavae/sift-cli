@@ -87,6 +87,26 @@ impl HttpClient {
         })
     }
 
+    /// POST a JSON body with a custom `Authorization` header. Used by
+    /// `sources::paddleocr` to drive the PaddleOCR layout-parsing
+    /// endpoint (which expects `Authorization: token <…>` rather than
+    /// the more usual `Bearer`). Shares the retry / `Retry-After` /
+    /// body-cap behavior with the other verbs.
+    pub fn post_json_with_auth(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        auth_header: &str,
+    ) -> Result<Vec<u8>, SiftError> {
+        self.with_retries("POST", url, || {
+            self.agent
+                .post(url)
+                .header("authorization", auth_header)
+                .header("content-type", "application/json")
+                .send_json(body)
+        })
+    }
+
     /// Shared retry / body-read loop for every HTTP verb. The
     /// `request` closure encapsulates which verb (and which body
     /// payload, for POST) to send on each attempt; everything else —
@@ -331,6 +351,59 @@ mod tests {
         let client = HttpClient::new();
         let body = client
             .post_form(&format!("{}/r", server.url()), &[("x", "1")])
+            .unwrap();
+        assert_eq!(body, b"ok");
+        m_fail.assert();
+        m_ok.assert();
+    }
+
+    #[test]
+    fn post_json_with_auth_sends_header_and_body() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/llm")
+            .match_header("authorization", "token abc123")
+            .match_header("content-type", "application/json")
+            .match_body(mockito::Matcher::JsonString(
+                r#"{"k":"v"}"#.to_string(),
+            ))
+            .with_status(200)
+            .with_body("ok")
+            .expect(1)
+            .create();
+        let client = HttpClient::new();
+        let body = client
+            .post_json_with_auth(
+                &format!("{}/llm", server.url()),
+                &serde_json::json!({"k": "v"}),
+                "token abc123",
+            )
+            .unwrap();
+        assert_eq!(body, b"ok");
+        m.assert();
+    }
+
+    #[test]
+    fn post_json_with_auth_retries_on_502_then_succeeds() {
+        let mut server = mockito::Server::new();
+        let m_fail = server
+            .mock("POST", "/llm")
+            .with_status(502)
+            .expect(2)
+            .create();
+        let m_ok = server
+            .mock("POST", "/llm")
+            .with_status(200)
+            .with_body("ok")
+            .expect(1)
+            .create();
+        let client = HttpClient::new();
+        let body = client
+            .post_json_with_auth(
+                &format!("{}/llm", server.url()),
+                &serde_json::json!({}),
+                "token x",
+            )
             .unwrap();
         assert_eq!(body, b"ok");
         m_fail.assert();

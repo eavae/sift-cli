@@ -14,8 +14,8 @@
 //!
 //! ## Why not first-success-wins
 //!
-//! F2 races every applicable source and takes the first `Ok`. Bars
-//! does not: the unified [`BarRow`] schema permits either
+//! `fetch::report` races every applicable source and takes the first
+//! `Ok`. Bars does not: the unified [`BarRow`] schema permits either
 //! source-native fields (EM) or client-computed approximations
 //! (Tencent), and silently mixing them across rows would produce
 //! `amount` columns that drift between exact and approximate
@@ -29,7 +29,7 @@ use crate::domain::bars::{BarRow, BarsQuery};
 use crate::error::SiftError;
 use crate::sources::bars_source::BarsSource;
 
-/// F5-bars ambient state: the cross-cutting [`AppContext`] plus the
+/// Bars ambient state: the cross-cutting [`AppContext`] plus the
 /// registered bars source list. Constructed by `main::run_bars` and
 /// passed through `commands::bars::run` down into the dispatch
 /// function. Borrowed everywhere — `app` and `sources` each live in

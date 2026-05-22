@@ -1,4 +1,4 @@
-//! East Money **market-data** integration (F5). Distinct from its
+//! East Money **market-data** integration. Distinct from its
 //! sibling `sources/eastmoney_financials/` — this subdirectory only
 //! covers current-price snapshots and historical daily K-lines, with
 //! its own endpoint set, field semantics, and unit conversions.
@@ -8,7 +8,7 @@
 //!   feed; see `quote::DEFAULT_QUOTE_BASE` for why we avoid the
 //!   realtime `push2` host)
 //! - `bars`  — daily K-line via
-//!   `push2his.eastmoney.com/api/qt/stock/kline/get` (story-02)
+//!   `push2his.eastmoney.com/api/qt/stock/kline/get`
 //!
 //! Helpers shared at the module root:
 //! - `secid()`: [`crate::domain::Symbol`] → EM `secid` string
@@ -40,8 +40,7 @@ use crate::error::SiftError;
 /// - `0` = Shenzhen / Beijing (everything else under `Market::CnA`)
 ///
 /// HK is always `116`; US is always `105` (NASDAQ — the first sift
-/// release does not split NYSE / AMEX; see the US note in
-/// [`docs/f5-realtime/README.md`]). The US branch is currently dead
+/// release does not split NYSE / AMEX). The US branch is currently dead
 /// code because `Symbol::parse` falls into `unreachable!()` for
 /// `Market::Us`, but the mapping is kept here so the table reads
 /// completely.

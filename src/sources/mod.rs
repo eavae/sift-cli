@@ -2,10 +2,10 @@
 //! provider; cache plumbing for these sources lives in
 //! [`crate::cache`].
 //!
-//! - `cninfo` is the F1 search-listing source.
-//! - `financial_source` defines the F2 trait every financial-data
-//!   upstream implements, plus the first-success-wins dispatcher.
-//!   Concrete adapters (eastmoney, sina) land in Stories 03 / 04.
+//! - `cninfo` is the search-listing source.
+//! - `financial_source` defines the trait every financial-data
+//!   upstream implements; concrete adapters live in `eastmoney_financials`
+//!   and `sina_financials`.
 
 pub mod bars_source;
 pub mod cninfo;

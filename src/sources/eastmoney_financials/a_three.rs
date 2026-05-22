@@ -625,7 +625,7 @@ mod tests {
                 &HttpClient::new(),
             )
             .unwrap_err();
-        // The HTTP retry inside F1 will retry the 503; either way the
+        // The HTTP retry layer will retry the 503; either way the
         // final result is an Err — no partial rows leak out.
         assert!(matches!(err, SiftError::Network(_)), "got {err:?}");
     }

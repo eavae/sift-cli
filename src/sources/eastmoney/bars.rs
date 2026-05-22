@@ -1,4 +1,4 @@
-//! EM `kline/get` historical K-line integration (F5 story-02).
+//! EM `kline/get` historical K-line integration.
 //!
 //! Endpoint: `{base}/api/qt/stock/kline/get` returns plain JSON:
 //!

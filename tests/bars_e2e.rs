@@ -1,6 +1,6 @@
-//! End-to-end tests for `sift bars` (story-02 single-symbol plus
-//! story-03 multi-symbol). Tencent is the default source — most
-//! tests drive the binary through `SIFT_TENCENT_BARS_BASE`.
+//! End-to-end tests for `sift bars` (single-symbol and multi-symbol).
+//! Tencent is the default source — most tests drive the binary
+//! through `SIFT_TENCENT_BARS_BASE`.
 //! `--source eastmoney` is exercised by a dedicated test pointing
 //! at `SIFT_EM_BARS_BASE`.
 

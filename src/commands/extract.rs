@@ -25,8 +25,7 @@ use crate::fetch::extract::{self, resolve_image_dir, DocMeta, Target};
 use crate::output::Format;
 use crate::pdf::pages::PageSpec;
 
-/// `sift extract <target> [options]`. See `docs/f4-extract/README.md`
-/// for the user-facing contract.
+/// `sift extract <target> [options]`.
 #[derive(Args, Debug)]
 pub struct ExtractArgs {
     /// announcementId (e.g. `1219506510`) or local PDF path (e.g.

@@ -54,10 +54,10 @@ fn open_file_cache() -> Option<FileCache> {
     }
 }
 
-/// Open `<root>/records.duckdb` best-effort. F2 financials + F3
-/// announce metadata both live in this one DuckDB file (different
-/// `Kind` namespaces in `cache_entries`). `None` is the warn-and-
-/// continue mode — every caller already guards on the Option.
+/// Open `<root>/records.duckdb` best-effort. Financials and announce
+/// metadata both live in this one DuckDB file (different `Kind`
+/// namespaces in `cache_entries`). `None` is the warn-and-continue
+/// mode — every caller already guards on the Option.
 fn open_records_cache(file_cache: Option<&FileCache>) -> Option<RecordCache> {
     let files = file_cache?;
     match RecordCache::open_at(&files.path("records.duckdb")) {
@@ -95,7 +95,7 @@ fn run_search(args: cli::SearchArgs, fmt: output::Format) -> Result<(), SiftErro
 }
 
 /// Build the AppContext + ReportContext for `sift report` and dispatch.
-/// The F2 source list is constructed inline (EastMoney + sina) — there's
+/// The source list is constructed inline (EastMoney + sina) — there's
 /// no hidden global registry. AppContext and the sources Vec each live
 /// in their own slot on this stack frame; `ReportContext { app, sources }`
 /// is a borrowed bundle for ergonomic single-argument dispatch.
@@ -126,10 +126,10 @@ fn run_announce(
 }
 
 /// Build the AppContext for `sift extract`. Both cache slots are
-/// opened: F3's PDF cache lives in `file_cache` (read for the
-/// `[info] cached` line, written when story-02/04 fetch a missing
-/// PDF), and `records_cache` is reserved for stories 02/03's
-/// metadata enrichment from stdin / announce cache.
+/// opened: the announcement PDF cache lives in `file_cache` (read
+/// for the `[info] cached` line, written when fetching a missing PDF),
+/// and `records_cache` carries metadata enrichment from stdin /
+/// announce cache.
 fn run_extract(
     args: crate::commands::extract::ExtractArgs,
     fmt: output::Format,

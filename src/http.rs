@@ -1,12 +1,12 @@
 //! Synchronous HTTP client shared by every data source.
 //!
-//! Wraps `ureq::Agent` with the F1-README-mandated retry policy:
-//! exponential backoff `1 → 2 → 4` seconds for status codes
-//! `429 / 500 / 502 / 503 / 504`, up to 3 retries (= 4 total requests).
-//! Other 4xx and transport-level failures return immediately.
+//! Wraps `ureq::Agent` with a retry policy: exponential backoff
+//! `1 → 2 → 4` seconds for status codes `429 / 500 / 502 / 503 / 504`,
+//! up to 3 retries (= 4 total requests). Other 4xx and transport-level
+//! failures return immediately.
 //!
-//! The retry parameters live as `const`s — F1 does not expose them as
-//! flags or config-file knobs.
+//! The retry parameters live as `const`s — not exposed as flags or
+//! config-file knobs.
 
 use crate::error::SiftError;
 use std::time::Duration;

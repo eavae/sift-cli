@@ -1,7 +1,7 @@
 //! `sift search`: fuzzy lookup over the cached cninfo A-share + HK
 //! listings. Three-way match (`code` substring / `zwjc` Chinese
-//! substring / `pinyin` initials prefix) per the F1 README; output
-//! goes through the format dispatcher in [`crate::output`].
+//! substring / `pinyin` initials prefix); output goes through the
+//! format dispatcher in [`crate::output`].
 
 use serde::{Serialize, Serializer};
 
@@ -19,7 +19,7 @@ use crate::sources::cninfo::CnInfoRow;
 ///
 /// `market` and `board` hold the typed enum values; the lowercase /
 /// uppercase / dash literal mappings live on the enums themselves (so
-/// F2 / F3 / F5 can reuse them) and are applied via `serialize_with`
+/// other commands can reuse them) and are applied via `serialize_with`
 /// for JSON and via [`RenderRow::cells`] for table / tsv.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SearchHit {
@@ -34,7 +34,7 @@ pub struct SearchHit {
     pub market: Market,
     #[serde(serialize_with = "serialize_board_lower")]
     pub board: Option<Board>,
-    /// Always `"cninfo"` in F1; reserved for future multi-source work.
+    /// Always `"cninfo"` today; reserved for future multi-source work.
     pub source: &'static str,
 }
 

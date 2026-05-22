@@ -1,11 +1,11 @@
-//! F3 announcements query: `POST /new/hisAnnouncement/query` form
+//! cninfo announcements query: `POST /new/hisAnnouncement/query` form
 //! endpoint, returning a paginated list of `RawAnnouncement` rows.
 //!
 //! The single entry is [`Announcements`] — a `struct + new() +
 //! with_url()` adapter matching the project-wide source convention
 //! (see [`crate::sources::eastmoney_financials::EastmoneyFinancialSource`] /
 //! [`crate::sources::sina_financials::SinaFinancialSource`]). Two
-//! methods cover the F3 surface:
+//! methods cover the surface:
 //!
 //! - [`Announcements::query`] — fetch up to `q.limit` rows for the
 //!   given filter, deduped across pages + columns, sorted newest-first.

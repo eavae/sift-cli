@@ -2,11 +2,11 @@
 //! down by reference.
 //!
 //! `AppContext` is the **cross-cutting infrastructure bag** — every
-//! field is used by ≥2 commands. F2-specific state (the source
+//! field is used by ≥2 commands. Report-specific state (the source
 //! list) is **not** here; it lives in [`crate::fetch::report::ReportContext`],
-//! which wraps `&AppContext` with the F2 sources slice. The split
-//! keeps `AppContext` stable as new features land — F4/F5 add their
-//! own per-feature contexts rather than growing this struct.
+//! which wraps `&AppContext` with the sources slice. The split keeps
+//! `AppContext` stable as new commands land — they add their own
+//! per-command contexts rather than growing this struct.
 //!
 //! ## Why no `Arc`
 //!
@@ -14,7 +14,7 @@
 //! `PathBuf`, with every operation opening a fresh connection or
 //! resolving a fresh path. They are cheap to hold by value. The
 //! `AppContext` itself is borrowed wherever it's needed, including
-//! across `std::thread::scope` worker threads in the F2 dispatcher —
+//! across `std::thread::scope` worker threads in the report dispatcher —
 //! no clone is required.
 //!
 //! ## Defaults
@@ -39,13 +39,13 @@ pub struct AppContext {
     /// in across multiple symbols / periods within one invocation.
     pub http: HttpClient,
     /// Filesystem blob-by-name cache rooted at `~/.sift/cache/` (or a
-    /// tempdir under test). Hosts F1 cninfo listings (`cninfo/…`) and
-    /// F3 PDF binaries (`announcements/<id>.pdf`). `None` when
+    /// tempdir under test). Hosts cninfo listings (`cninfo/…`) and
+    /// announcement PDF binaries (`announcements/<id>.pdf`). `None` when
     /// `$HOME` was unresolvable at startup — fetch helpers degrade
     /// to no-cache mode in that case.
     pub file_cache: Option<FileCache>,
-    /// DuckDB blob-by-key cache shared by F2 financials and F3
-    /// announce metadata (`<cache_root>/records.duckdb`). `None` when
+    /// DuckDB blob-by-key cache shared by financials and announce
+    /// metadata (`<cache_root>/records.duckdb`). `None` when
     /// the command didn't need a record cache or when opening the
     /// file failed (warn-and-continue path in `main.rs`).
     pub records_cache: Option<RecordCache>,

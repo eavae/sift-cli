@@ -14,10 +14,10 @@
 //!
 //! ## Persistence discipline
 //! - Two `Kind`s share this table today:
-//!   - `Kind::AnnounceMeta` — F3 announcement rows. Immutable after
+//!   - `Kind::AnnounceMeta` — announcement rows. Immutable after
 //!     publication, so cached entries live forever; every consumer
 //!     ignores `created_at`.
-//!   - `Kind::Financials` — F2 financial-row groups. Caller applies
+//!   - `Kind::Financials` — financial-row groups. Caller applies
 //!     a TTL policy on top of [`CacheEntry::created_at`] —
 //!     `RecordCache` itself stays TTL-agnostic.
 //! - Keys are `blake3(kind_label : scope_parts? : id)` to keep the
@@ -58,7 +58,7 @@ pub enum Kind {
     /// `domain::AnnouncementRow`. No TTL — announcement metadata is
     /// immutable after publication.
     AnnounceMeta,
-    /// F2 financial-row group, keyed on
+    /// Financial-row group, keyed on
     /// `(symbol, market, statement, scope, source) → period_iso`.
     /// Body is JSON-serialized `Vec<StoredFinancialRow>` (one row per
     /// item within that period). TTL is applied by the caller in
@@ -99,8 +99,8 @@ pub struct RecordCache {
 }
 
 /// One hit's payload. `RecordCache` itself does not enforce TTL —
-/// callers that need it (F2 financials) apply their bucket policy on
-/// top of [`Self::created_at`]; callers that don't (F3 announce
+/// callers that need it (financials) apply their bucket policy on
+/// top of [`Self::created_at`]; callers that don't (announce
 /// metadata) ignore the field.
 pub struct CacheEntry {
     pub body: Vec<u8>,

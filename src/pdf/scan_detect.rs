@@ -4,16 +4,11 @@
 //! it their already-extracted text / image / area data without
 //! re-invoking pdf-oxide.
 //!
-//! Thresholds come straight from
-//! [README §"扫描页判定"](../../docs/f4-extract/README.md):
-//! `text_chars / page_area_px² < 1e-3` **and** the largest image
-//! bbox covers > 80% of page area. Both knobs are `const` — F4 does
-//! not expose them as flags.
+//! Thresholds: `text_chars / page_area_px² < 1e-3` **and** the largest
+//! image bbox covers > 80% of page area. Both knobs are `const` — not
+//! exposed as flags.
 //!
-//! Note on the density formula: README's exponent (`px²`) is the
-//! contract — we honor it verbatim so users can correlate stderr
-//! `[warn]` lines with the docs. It's a heuristic, not a physical
-//! invariant.
+//! It's a heuristic, not a physical invariant.
 
 use crate::pdf::extract::EmbeddedImage;
 

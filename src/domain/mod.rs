@@ -1,15 +1,15 @@
 //! Domain types shared across data sources and commands.
 //!
-//! - `Symbol` parses user-supplied stock identifiers (F1).
-//! - `Market` / `Board` plus `infer_board` (F1).
+//! - `Symbol` parses user-supplied stock identifiers.
+//! - `Market` / `Board` plus `infer_board`.
 //! - `Period` / `PeriodType` map user-facing period literals to report
-//!   end-dates (F2).
+//!   end-dates.
 //! - `FinancialRow` plus `Statement` / `Scope` / `Unit` / `AuditStatus`
 //!   / `SourceTag` are the long-format domain types financials sources
-//!   produce (F2).
-//! - `Query` is the input to the financial-source dispatch layer (F2).
+//!   produce.
+//! - `Query` is the input to the financial-source dispatch layer.
 //! - `items_dict` ships the upstream-label → standardized-Chinese
-//!   dictionary plus the unmapped-label collector (F2).
+//!   dictionary plus the unmapped-label collector.
 
 pub mod announcement;
 pub mod bars;

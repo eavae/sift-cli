@@ -1,4 +1,4 @@
-//! `sift bars <symbol>...` — historical K-line bars (F5).
+//! `sift bars <symbol>...` — historical K-line bars.
 //!
 //! The command does five things:
 //! 1. Soft-reject `--format json` with a user-facing message.

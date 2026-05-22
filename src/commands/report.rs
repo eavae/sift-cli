@@ -65,7 +65,7 @@ pub struct StatementArgs {
     #[arg(long, value_enum, default_value_t = UnitArg::Raw)]
     pub unit: UnitArg,
 
-    /// Comma-separated item names. Empty = the F2 default core set
+    /// Comma-separated item names. Empty = the default core set
     /// for this statement.
     #[arg(long, value_delimiter = ',')]
     pub items: Vec<String>,
@@ -198,7 +198,7 @@ fn run_statement(
     }
 
     // Back-fill the security short name (sina lrb does not return it)
-    // from the F1 cninfo listing cache. Empty map if the cache is
+    // from the cninfo listing cache. Empty map if the cache is
     // missing — render falls back to whatever `name` the source
     // already populated.
     let names = load_listing_names(ctx.app);

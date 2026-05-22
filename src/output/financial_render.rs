@@ -240,8 +240,8 @@ fn render_table<W: Write>(out: &mut W, table: &PivotedTable) -> Result<(), SiftE
 }
 
 /// Collapse a per-period `_source` slice into a single header value:
-/// unique source names sorted lexicographically and joined with `+`.
-/// Matches the `eastmoney+sina` convention from the F2 README.
+/// unique source names sorted lexicographically and joined with `+`
+/// (e.g. `eastmoney+sina`).
 fn aggregate_sources(sources: &[String]) -> String {
     let unique: std::collections::BTreeSet<&str> = sources.iter().map(String::as_str).collect();
     unique.into_iter().collect::<Vec<_>>().join("+")

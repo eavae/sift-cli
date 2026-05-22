@@ -4,8 +4,8 @@
 //! [`crate::fetch::bars`]. The trait takes only an [`HttpClient`]
 //! and a [`BarsQuery`] — sources are pure HTTP-bound implementations
 //! and never see [`crate::app::AppContext`] / caches / the source
-//! list. Mirrors the F2 [`crate::sources::financial_source::FinancialSource`]
-//! pattern so the two feature layers stay structurally aligned.
+//! list. Mirrors the [`crate::sources::financial_source::FinancialSource`]
+//! pattern so the two layers stay structurally aligned.
 
 use crate::domain::bars::{BarRow, BarsQuery};
 use crate::error::SiftError;

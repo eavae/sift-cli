@@ -3,9 +3,9 @@
 //! Counterpart to [`crate::cache::record::RecordCache`] (DuckDB
 //! blob-by-key). Two callers live on top of it:
 //!
-//! - F1 listings: cached JSON envelopes under `cninfo/`, mtime TTL
+//! - cninfo listings: cached JSON envelopes under `cninfo/`, mtime TTL
 //!   (orchestrator: `fetch::search`).
-//! - F3 PDF binaries: PDFs under `announcements/`, no TTL
+//! - Announcement PDF binaries: PDFs under `announcements/`, no TTL
 //!   (orchestrator: `fetch::announce`).
 //!
 //! `FileCache` exposes file-level primitives keyed by a relative
@@ -18,12 +18,10 @@
 //!
 //! ## Why a struct over free functions
 //!
-//! Before this module landed, F1 and F3 each open-coded
-//! `cache::{atomic_write, is_fresh, format_mtime_utc}` against their
-//! own subdir resolution path. Hoisting that surface onto a single
-//! type lets `AppContext` carry one Option per cache flavor (`file`
-//! vs `record`) and gives unit tests an injection point that doesn't
-//! depend on `$HOME` or env var monkey-patching.
+//! Hoisting `cache::{atomic_write, is_fresh, format_mtime_utc}` onto
+//! a single type lets `AppContext` carry one Option per cache flavor
+//! (`file` vs `record`) and gives unit tests an injection point that
+//! doesn't depend on `$HOME` or env var monkey-patching.
 
 use std::path::PathBuf;
 

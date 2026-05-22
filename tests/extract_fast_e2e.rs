@@ -66,7 +66,7 @@ fn local_pdf_emits_page_markers_and_info_header() {
 
     assert!(stdout.contains("hello sift one"), "stdout: {stdout}");
 
-    // The [info] header rows defined for story-02.
+    // The [info] header rows.
     assert!(stderr.contains("[info] file"), "stderr: {stderr}");
     assert!(stderr.contains("[info] pages       3"), "stderr: {stderr}");
     assert!(stderr.contains("[info] size"), "stderr: {stderr}");

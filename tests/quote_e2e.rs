@@ -2,7 +2,7 @@
 //! `assert_cmd`, points it at a mockito-backed `SIFT_EM_QUOTE_BASE`,
 //! and asserts on stdout / stderr / exit code.
 //!
-//! Coverage map (story-01 acceptance criteria):
+//! Coverage:
 //! - default `Table` format and TSV format produce the documented columns
 //! - `--format json` is soft-rejected with a user-facing message, exit 1
 //! - multi-symbol partial failure: stdout stays clean, stderr warns

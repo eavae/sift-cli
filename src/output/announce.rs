@@ -1,6 +1,6 @@
 //! Render layer for `sift announce`: projection structs + the three
 //! renderers (`types`, `list`, `show`). Sibling of
-//! [`crate::output::financial_render`] for F2; consumed by
+//! [`crate::output::financial_render`]; consumed by
 //! [`crate::commands::announce`]. No cache, no network — every
 //! function here takes already-resolved domain values and writes
 //! formatted bytes to the provided `W`.
@@ -84,9 +84,8 @@ pub fn to_type_row(c: &Category) -> TypeRow {
 
 /// Render rows through the `tabled` crate with `Style::empty()` and
 /// `Padding(0, 2, 0, 0)` — borderless, two-space inter-column gap,
-/// no top/bottom padding. Mirrors the F2 tech_design tabled
-/// convention and keeps the visual identity uniform across sift
-/// commands.
+/// no top/bottom padding. Keeps the visual identity uniform across
+/// sift commands.
 pub fn render_tabled<W: Write>(out: &mut W, rows: &[TypeRow]) -> Result<(), SiftError> {
     let mut t = Table::new(rows);
     t.with(Style::empty()).with(Padding::new(0, 2, 0, 0));

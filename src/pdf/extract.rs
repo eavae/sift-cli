@@ -1,5 +1,5 @@
 //! Thin wrapper over the `pdf_oxide` crate exposing only the entry
-//! points F4 needs. Keeps upstream API shape (1-based vs 0-based
+//! points `sift extract` needs. Keeps upstream API shape (1-based vs 0-based
 //! indices, `Result<usize>` vs `usize`, `ConversionOptions`, the
 //! `ImageData` / `ColorSpace` enums, …) confined to this module so a
 //! future swap of the PDF backend is local.

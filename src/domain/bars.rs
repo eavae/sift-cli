@@ -1,8 +1,7 @@
 //! Row type for `sift bars` — one historical K-line bar for one
-//! symbol (F5 story-02 + story-03).
+//! symbol.
 //!
-//! Schema and unit normalization follow the output table in
-//! `docs/f5-realtime/README.md`. `symbol` is the universal code,
+//! `symbol` is the universal code,
 //! `date` is ISO `YYYY-MM-DD`, price fields are yuan (divided by
 //! 100 from EM's raw cents form when applicable), `volume` is in
 //! shares (multiplied by 100 from the upstream "hands" unit), and
@@ -71,8 +70,8 @@ impl Period {
 /// share this shape — the `fetch::bars` dispatcher passes the same
 /// struct down to whichever [`crate::sources::bars_source::BarsSource`]
 /// is selected. Keeping the query in `domain/` (rather than
-/// duplicated per source) is the same pattern F2 uses with
-/// [`crate::domain::Query`].
+/// duplicated per source) mirrors how [`crate::domain::Query`] is
+/// shared by the financials sources.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BarsQuery {
     pub symbol: crate::domain::Symbol,
@@ -175,8 +174,7 @@ mod tests {
         assert_eq!(h[11], "adjust");
         assert_eq!(h[12], "period");
         assert_eq!(h[13], "source");
-        // turnover_pct was removed in F5 follow-up — no longer in
-        // the header set.
+        // turnover_pct is not in the header set.
         assert!(!h.contains(&"turnover_pct"));
     }
 

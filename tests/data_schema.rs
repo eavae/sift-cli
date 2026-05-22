@@ -92,7 +92,7 @@ fn aliases_are_globally_unique_across_all_entries() {
 fn defaults_has_all_four_statements_with_documented_counts() {
     let d: Defaults =
         serde_json::from_str(DEFAULTS_JSON).expect("financials_default_items.json must parse");
-    // Counts match the F2 README "默认数据列" table.
+    // Counts match the documented "默认数据列" table.
     assert_eq!(d.income.len(), 7, "income default list length");
     assert_eq!(d.balance.len(), 7, "balance default list length");
     assert_eq!(d.cashflow.len(), 5, "cashflow default list length");

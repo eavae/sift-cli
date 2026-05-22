@@ -3,8 +3,8 @@
 //! - A-share: `RPT_F10_FINANCE_MAINFINADATA` — wide table, one row per
 //!   `REPORT_DATE`. Field translation reuses the same dictionary as
 //!   the three statements.
-//! - HK: `RPT_HKF10_FN_MAININDICATOR` — also wide. **Stubbed for this
-//!   story** (returns empty); the field set differs significantly and
+//! - HK: `RPT_HKF10_FN_MAININDICATOR` — also wide. **Stubbed**
+//!   (returns empty); the field set differs significantly and
 //!   needs its own dictionary pass.
 
 use serde_json::{Map, Value};

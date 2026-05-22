@@ -3,10 +3,9 @@
 //! Owns the first-success-wins multi-source dispatch + per-source
 //! cache coordination for `sift report`. `commands/report.rs` calls
 //! into the public entry points here ([`dispatch_with_cache_named`],
-//! [`list_periods_union`]); every F2 cache interaction goes through
+//! [`list_periods_union`]); every report cache interaction goes through
 //! the `financials_cache_*` adapter section at the bottom of this
-//! file — there is no F2-specific cache struct any more, both F2
-//! financials and F3 announce metadata share one
+//! file. Financial rows and announce metadata share one
 //! [`crate::cache::record::RecordCache`].
 //!
 //! ## Layering
@@ -38,7 +37,7 @@ use crate::sources::financial_source::FinancialSource;
 // ReportContext + dispatch
 // ===========================================================================
 
-/// F2-specific ambient state: the cross-cutting [`AppContext`] plus
+/// Report-specific ambient state: the cross-cutting [`AppContext`] plus
 /// the registered source list. Constructed by `main::run_report` and
 /// passed through `commands::report::run` down into the dispatch
 /// functions. Borrowed everywhere — `app` and `sources` each live in
@@ -261,36 +260,35 @@ pub fn list_periods_union(
 }
 
 // ===========================================================================
-// `load_listing_names` — F1 cache read-through for `sift report` rendering
+// `load_listing_names` — listing cache read-through for `sift report` rendering
 // ===========================================================================
 
-/// Read the F1 cninfo listing cache and return the `code → 中文简称`
-/// map. F2 / `sift report` uses this to back-fill the security short
+/// Read the cninfo listing cache and return the `code → 中文简称`
+/// map. `sift report` uses this to back-fill the security short
 /// name for rows where the source (sina) did not provide one — the
 /// alternative would be leaving the rendered table with blanks in the
 /// `name` column, since sina's lrb endpoint omits names.
 ///
 /// Thin pass-through over [`crate::fetch::search::cached_names`];
 /// exists so [`commands::report`] flows through `fetch::report::*`
-/// for every piece of data access (the §5.3 / §5.4 layering invariant
-/// requires commands to never reach into another feature's fetch
-/// module). Missing / empty cache returns an empty map — render falls
-/// back to whatever `name` the source already populated.
+/// for every piece of data access (commands must never reach into
+/// another command's fetch module). Missing / empty cache returns
+/// an empty map — render falls back to whatever `name` the source
+/// already populated.
 pub fn load_listing_names(ctx: &AppContext) -> std::collections::HashMap<String, String> {
     crate::fetch::search::cached_names(ctx)
 }
 
 // ===========================================================================
-// F2 financials cache adapter
+// Financials cache adapter
 // ===========================================================================
 //
-// F2 historically used a dedicated typed DuckDB schema
-// (`cache::financials::FinancialCache`). After unifying the DuckDB
-// abstraction, both F2 and F3 share one `cache_entries(key, body, …)`
-// table behind `RecordCache`. This adapter is the only piece that
-// knows F2-specific semantics: how to build the composite key, how to
-// serialize a period's worth of rows into the opaque body, and where
-// to apply the three-bucket TTL.
+// Report financials and announce metadata share one
+// `cache_entries(key, body, …)` table behind `RecordCache`. This
+// adapter is the only piece that knows report-specific semantics:
+// how to build the composite key, how to serialize a period's worth
+// of rows into the opaque body, and where to apply the three-bucket
+// TTL.
 
 /// JSON-friendly mirror of [`FinancialRow`] used as the cache body
 /// format. Kept private to `fetch::report` so changes here don't
@@ -358,7 +356,7 @@ impl StoredFinancialRow {
     }
 }
 
-/// Scope segments used as the `RecordCache` key prefix for an F2 row.
+/// Scope segments used as the `RecordCache` key prefix for a financials row.
 /// `id` is the period's ISO end-date; the rest go into `scope` so the
 /// blake3 hash separates entries cleanly across symbols / statements /
 /// scopes / sources. The string slices borrow from the inputs — call
@@ -599,7 +597,7 @@ mod tests {
     }
 
     /// Build the no-cache `AppContext` shared by every dispatch test.
-    /// `records_cache = None` skips the F2 cache pre-filter; the F2
+    /// `records_cache = None` skips the cache pre-filter; the
     /// `financials_cache_*` adapter tests build their own ctx.
     fn empty_app() -> AppContext {
         AppContext::default()
@@ -853,13 +851,11 @@ mod tests {
         assert!(matches!(err, SiftError::NoApplicableSource(_)));
     }
 
-    // ---- F2 cache adapter tests --------------------------------------
+    // ---- financials cache adapter tests ------------------------------
     //
     // These verify the `financials_cache_*` adapter that wraps the
-    // generic `RecordCache` with F2-specific (sym, stmt, period, scope,
-    // source) scoping + TTL + dict renormalize. They used to live in
-    // `cache::financials::tests`; that module is gone now (F2 shares
-    // the same DuckDB schema as F3 announce metadata).
+    // generic `RecordCache` with (sym, stmt, period, scope, source)
+    // scoping + TTL + dict renormalize.
 
     use tempfile::TempDir;
     use time::OffsetDateTime;

@@ -1,4 +1,4 @@
-//! `sift quote <symbol>...` — current-price snapshot (F5).
+//! `sift quote <symbol>...` — current-price snapshot.
 //!
 //! The command does four things:
 //! 1. Soft-reject `--format json` with a user-facing message.

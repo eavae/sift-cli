@@ -1,9 +1,8 @@
 //! `Period` — a financial report period.
 //!
-//! Accepts the user-facing literal forms documented in the F2 README
-//! "报告期解析速查" (`2024A` / `2024Q1` / `2024H1` / `2024Q3` /
-//! `YYYY-MM-DD`); `2024` (bare year) is explicitly rejected as
-//! ambiguous and must be expanded at the command layer into the four
+//! Accepts the user-facing literal forms `2024A` / `2024Q1` / `2024H1` /
+//! `2024Q3` / `YYYY-MM-DD`; `2024` (bare year) is explicitly rejected
+//! as ambiguous and must be expanded at the command layer into the four
 //! standard period-ends.
 //!
 //! HK F10 uses `DATE_TYPE_CODE` (`001`/`002`/`003`/`004`) instead of

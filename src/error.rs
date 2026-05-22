@@ -63,7 +63,7 @@ fn format_source_failures(failures: &[(String, String)]) -> String {
 }
 
 impl SiftError {
-    /// One-to-one with the exit-code table in the F1 README.
+    /// Exit-code mapping for the binary.
     pub fn exit_code(&self) -> i32 {
         match self {
             SiftError::Internal(_)

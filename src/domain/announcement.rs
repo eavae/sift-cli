@@ -132,7 +132,7 @@ pub fn categories() -> &'static [Category] {
 
 /// Look up by the user-facing Chinese name (`--type` value). Returns
 /// `None` for any string not in the dictionary — callers (clap value
-/// parser, F3 list / show) treat that as a usage error.
+/// parser, `announce list / show`) treat that as a usage error.
 pub fn lookup(zh: &str) -> Option<&'static Category> {
     categories().iter().find(|c| c.zh == zh)
 }

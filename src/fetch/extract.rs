@@ -1,19 +1,16 @@
-//! Data-access coordinator for `sift extract` (F4 fast mode).
+//! Data-access coordinator for `sift extract`.
 //!
 //! `commands/extract.rs` calls into this module for everything that
-//! touches PDF bytes, the F3 PDF file cache, or the image landing
+//! touches PDF bytes, the announce PDF file cache, or the image landing
 //! directory. The split mirrors `fetch::announce` / `fetch::report` /
 //! `fetch::search`: commands own user-facing wiring and rendering,
 //! `fetch::*` owns the resolve / cache / encode policy.
 //!
-//! Story-02 lands the `fast` orchestration: open the PDF (via
-//! `AnnounceResolver` for an announcementId, direct read for a local
-//! path), walk the requested pages once, harvest text + images +
-//! scan verdict per page, write images to the configured directory,
-//! and rewrite the markdown to reference them by absolute path.
-//!
-//! Stories 03 / 04 will add `fine` (PaddleOCR) and `auto` (mixed)
-//! orchestrators alongside.
+//! The `fast` orchestration opens the PDF (via `AnnounceResolver` for
+//! an announcementId, direct read for a local path), walks the
+//! requested pages once, harvests text + images + scan verdict per
+//! page, writes images to the configured directory, and rewrites the
+//! markdown to reference them by absolute path.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -79,7 +76,7 @@ impl Target {
 pub struct DocMeta {
     pub page_count: u32,
     /// PDF file size in bytes. Populated when the on-disk path is
-    /// known (which it always is for both targets in story-02).
+    /// known (which it always is for both targets today).
     pub size_bytes: u64,
     /// Average characters per page across the whole document.
     /// Drives the `text_layer` info row + the `hint` line.
@@ -219,9 +216,9 @@ pub fn validate_pages(pages: &[u32], max: u32) -> Result<(), SiftError> {
 /// (`12-15,18,22-30`) and the suggested retry command is the
 /// minimal `--mode fine` re-extract.
 ///
-/// The function is single-threaded and synchronous: F4's fast path
+/// The function is single-threaded and synchronous: the fast path
 /// is meant to be local-only and millisecond-fast; the OCR / batch
-/// concurrency lives in fine/auto (stories 03/04).
+/// concurrency lives in fine/auto.
 pub fn fast(
     doc: &PdfDoc,
     target: &Target,

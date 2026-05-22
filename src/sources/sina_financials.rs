@@ -13,7 +13,7 @@
 //!
 //! Everything else returns `false` from `supports`, so the
 //! dispatcher skips sina entirely for those queries. Item names are
-//! normalized via the F2 dictionary in
+//! normalized via the dictionary in
 //! [`crate::domain::items_dict::dict`], same as the EM source.
 
 use std::collections::{HashMap, HashSet};
@@ -248,8 +248,8 @@ fn parse_rows(raw: SinaResp, q: &Query) -> Result<Vec<FinancialRow>, SiftError> 
             rows.push(FinancialRow {
                 symbol: q.symbol.clone(),
                 // sina does not return the security short name; the
-                // command layer fills this in from the F1 cninfo cache
-                // before rendering.
+                // command layer fills this in from the cninfo listing
+                // cache before rendering.
                 name: String::new(),
                 period: date,
                 period_type,

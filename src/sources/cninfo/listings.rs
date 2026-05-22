@@ -1,6 +1,5 @@
-//! F1 stock-listing schema: `szse_stock.json` / `hke_stock.json` →
-//! [`CnInfoRow`] / [`StockLists`] / [`parse_envelope`]. Field semantics
-//! pinned in the F1 README "数据源与协议".
+//! Stock-listing schema: `szse_stock.json` / `hke_stock.json` →
+//! [`CnInfoRow`] / [`StockLists`] / [`parse_envelope`].
 
 use serde::{Deserialize, Serialize};
 

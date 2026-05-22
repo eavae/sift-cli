@@ -1,10 +1,8 @@
 //! US three statements via the EM datacenter.
 //!
-//! Stubbed for this story: the public `supports` matrix admits
+//! Stubbed: the public `supports` matrix admits
 //! `(Market::Us, _, Scope::Consolidated)`, but `fetch` here returns an
-//! empty `Vec`. The story explicitly allows this — Story 05's smoke
-//! phase will decide whether to flesh out US live or keep it
-//! fixture-only.
+//! empty `Vec`.
 //!
 //! Concretely: the production EM datacenter URL family for US is the
 //! same `v1/get` shape as HK, with `reportName = RPT_F10_*` instead

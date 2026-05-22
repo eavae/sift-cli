@@ -1,6 +1,6 @@
 //! Search data-access coordinator.
 //!
-//! Owns the F1 listing cache + cninfo fetch + org-id resolution. The
+//! Owns the listing cache + cninfo fetch + org-id resolution. The
 //! public entry points are:
 //!
 //! - [`load_all_listings`] — returns owned `(Market, CnInfoRow)` pairs;
@@ -107,7 +107,7 @@ pub fn load_all_listings(
 /// Resolve a single user-supplied code to a [`ResolvedSymbol`].
 ///
 /// Three-step strategy:
-/// 1. Read the on-disk F1 cache via [`cached_org_ids`] — if the code
+/// 1. Read the on-disk listing cache via [`cached_org_ids`] — if the code
 ///    is present, return immediately (zero network).
 /// 2. Cache miss → call [`list_stocks`] with default opts (24h TTL,
 ///    stale fallback). cninfo's name index is small + fast so this is
@@ -135,8 +135,8 @@ pub fn resolve_org_id(ctx: &AppContext, code: &str) -> Result<ResolvedSymbol, Si
 }
 
 /// Read the on-disk cninfo cache and return a `code → zwjc` map
-/// without ever triggering a network fetch. Used by F2 to back-fill
-/// the security name for rows where the upstream source did not
+/// without ever triggering a network fetch. Used by `sift report` to
+/// back-fill the security name for rows where the upstream source did not
 /// supply one (sina returns blank names). Returns an empty map when
 /// the file cache is disabled, the listing files do not exist, are
 /// unreadable, or fail to parse — the caller treats that as "no
@@ -203,7 +203,7 @@ pub(crate) fn cached_org_ids_from(files: &FileCache) -> HashMap<String, (Market,
 
 /// Production entry: caches under `<file_cache.root>/cninfo/`;
 /// warnings go to stderr. When `ctx.file_cache` is `None` (no
-/// `$HOME`), this errors out — F1 needs a cache root to function
+/// `$HOME`), this errors out — search needs a cache root to function
 /// (every fetch path expects to write back).
 pub fn list_stocks(ctx: &AppContext, opts: SearchCacheOpts) -> Result<StockLists, SiftError> {
     let files = ctx
@@ -259,7 +259,7 @@ fn load_one(
             let rows = cninfo::parse_envelope(&bytes, ep.label)?;
             // Cache write failure is non-fatal: the user already has
             // their data this call; only the next call pays the
-            // re-fetch. Matches F2 / F3's warn-and-continue policy
+            // re-fetch. Matches the project-wide warn-and-continue policy
             // (e.g. `cache::record::RecordCache::put_many`).
             if let Err(e) = files.write(&key, &bytes) {
                 let _ = writeln!(

@@ -1,7 +1,8 @@
 //! Announce data-access coordinator.
 //!
 //! [`AnnounceResolver`] owns the cache + cninfo + stdin fallback
-//! policy for F3, **plus** the F3 PDF cache. The `commands/announce/`
+//! policy for `sift announce`, **plus** the PDF cache. The
+//! `commands/announce/`
 //! layer drives the CLI and rendering; everything that touches
 //! `RecordCache`, the PDF `FileCache`, `Announcements`, or the
 //! cninfo PDF download lives here.
@@ -283,7 +284,7 @@ impl<'a> AnnounceResolver<'a> {
     }
 
     // -----------------------------------------------------------------
-    // PDF cache — file-level operations on the F3 PDF blobs
+    // PDF cache — file-level operations on the announcement PDF blobs
     // -----------------------------------------------------------------
 
     /// On-disk path the cache would use for `id`'s PDF, if a file
@@ -420,7 +421,7 @@ impl<'a> AnnounceResolver<'a> {
     }
 }
 
-/// Subpath convention for the F3 PDF cache: `announcements/<id>.pdf`.
+/// Subpath convention for the announcement PDF cache: `announcements/<id>.pdf`.
 /// One definition point — every resolver method that touches a PDF
 /// blob composes its key through here so adding a per-source-prefix
 /// or sharding scheme later is a one-line change.

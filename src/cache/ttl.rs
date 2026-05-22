@@ -1,7 +1,5 @@
 //! Three-bucket TTL policy for the financials cache.
 //!
-//! Per the F2 README "缓存策略" table:
-//!
 //! | Report age (period_end vs. today) | TTL    |
 //! | --- | --- |
 //! | > 365 days                        | None (永久) |

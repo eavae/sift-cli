@@ -1,9 +1,7 @@
-//! Market / Board enums plus the local `code` → board dictionary. Source
-//! of truth: the F1 README "code prefix → board" table. Any change here
-//! must update that table too.
+//! Market / Board enums plus the local `code` → board dictionary.
 
 /// First-version market scope: CN A-share + HK. `Us` / `Neeq` are
-/// explicitly out — see F1 README "已对齐的设计决策".
+/// explicitly out.
 ///
 /// Declaration order is significant: `CnA` is declared first, so the
 /// derived `Ord` impl gives "CN-A before HK", matching the README sort
@@ -15,8 +13,8 @@ pub enum Market {
     CnA,
     /// Hong Kong main board / GEM, served by `hke_stock.json`.
     Hk,
-    /// US-listed equities. Reached only by the F2 eastmoney financial
-    /// source; F1 search does not enumerate US tickers (cninfo does
+    /// US-listed equities. Reached only by the eastmoney financial
+    /// source; `sift search` does not enumerate US tickers (cninfo does
     /// not cover them).
     Us,
 }

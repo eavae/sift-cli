@@ -1,9 +1,8 @@
 //! Row type for `sift quote` — one snapshot of current price for one
-//! symbol (F5 story-01).
+//! symbol.
 //!
-//! Column order, units, and naming follow the output schema table in
-//! `docs/f5-realtime/README.md`. The `RenderRow` impl carries the
-//! table / TSV column layout; `Serialize` is only there for NDJSON,
+//! The `RenderRow` impl carries the table / TSV column layout;
+//! `Serialize` is only there for NDJSON,
 //! which `commands/quote.rs::run` soft-rejects up front — so the
 //! `Serialize` derive is kept purely so this row shape stays
 //! interchangeable with the other `RenderRow` types (search /

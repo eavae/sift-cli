@@ -1,9 +1,9 @@
-//! Multi-symbol grouped TTY renderer for `sift bars` (F5 story-03).
+//! Multi-symbol grouped TTY renderer for `sift bars`.
 //!
-//! This module sits next to `output/financial_render.rs` (F2 wide
-//! pivot) and `output/announce.rs` (F3 static views) — one output
-//! module per feature, with the command layer calling only the
-//! public entry exposed here.
+//! This module sits next to `output/financial_render.rs` (wide pivot)
+//! and `output/announce.rs` (static views) — one output module per
+//! command, with the command layer calling only the public entry
+//! exposed here.
 //!
 //! The TSV path does **not** go through this module:
 //! [`commands/bars.rs`] dispatches `fmt == Tsv` straight to

@@ -18,7 +18,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use crate::error::SiftError;
 
-/// 24 h. Matches the F1 README "缓存策略" decision.
+/// 24 h.
 pub const CACHE_TTL_SEARCH_SECS: u64 = 24 * 3600;
 
 // ---------------------------------------------------------------------------

@@ -1,15 +1,13 @@
-//! cninfo source — stock listings (F1 `search`) **and**
-//! announcements query (F3 `announce list / download`).
+//! cninfo source — stock listings (`sift search`) **and**
+//! announcements query (`sift announce list / download`).
 //!
-//! - [`listings`] — F1 listings schema + [`CnInfoRow`] / [`StockLists`] /
-//!   [`parse_envelope`]. Field semantics pinned in the F1 README
-//!   "数据源与协议".
-//! - [`announcements`] — F3 paginated `POST /new/hisAnnouncement/query`
+//! - [`listings`] — listings schema + [`CnInfoRow`] / [`StockLists`] /
+//!   [`parse_envelope`].
+//! - [`announcements`] — paginated `POST /new/hisAnnouncement/query`
 //!   with dedup, multi-column fan-out, and Beijing-timezone date
-//!   conversion. The PDF download path itself lives on
-//!   [`crate::fetch::announce::AnnounceResolver::download_pdf`] now
-//!   (HTTP GET + `FileCache::write`) — the old standalone
-//!   `cninfo::download_pdf` collapsed into that method.
+//!   conversion. The PDF download path lives on
+//!   [`crate::fetch::announce::AnnounceResolver::download_pdf`]
+//!   (HTTP GET + `FileCache::write`).
 
 pub mod announcements;
 pub mod listings;
@@ -29,8 +27,7 @@ use crate::domain::market::Market;
 /// the round-trip and matches what a browser would do.
 ///
 /// The PDF static site lives at a separate origin (`static.cninfo.com.cn`)
-/// and is HTTP-only by upstream design (see Story 04 §3); it is **not**
-/// affected by this base.
+/// and is HTTP-only by upstream design; it is **not** affected by this base.
 const DEFAULT_BASE: &str = "https://www.cninfo.com.cn";
 pub(crate) const ANNOUNCEMENT_PATH: &str = "/new/hisAnnouncement/query";
 pub(crate) const PAGE_SIZE: u32 = 30;

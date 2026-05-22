@@ -1,5 +1,5 @@
 //! Tencent finance (`ifzq.gtimg.cn`) source — historical K-line
-//! integration for F5 bars (default source).
+//! integration (default source for `sift bars`).
 //!
 //! The single endpoint covers CN A-share, HK and US under three
 //! sibling paths (`fqkline` / `hkfqkline` / `usfqkline`), keyed by
@@ -21,7 +21,7 @@ pub mod bars;
 
 // Concrete source type lives in `bars`; production uses
 // `bars::build()` to get a trait object. No re-exports at this
-// level — keeps the cross-feature surface minimal.
+// level — keeps the surface minimal.
 
 use crate::domain::market::Market;
 use crate::domain::Symbol;

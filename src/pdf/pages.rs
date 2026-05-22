@@ -2,7 +2,7 @@
 //! page numbers. Pure: takes a string, returns a `PageSpec` or a
 //! `SiftError::Parse`. Total-page-count clamping is **not** done
 //! here — this layer has no idea how long the target PDF is; that
-//! validation lives in story-02 once `pdf-oxide` is wired up.
+//! validation happens at the `pdf-oxide` boundary.
 //!
 //! Grammar:
 //!

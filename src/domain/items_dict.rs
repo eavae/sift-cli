@@ -1,7 +1,7 @@
 //! Item-name normalization dictionary plus a process-global collector
 //! for items the dictionary did **not** know about.
 //!
-//! Behaviors per F2 README "科目命名约定":
+//! Behaviors:
 //!
 //! - Hit → return the standardized Chinese name (`entry.cn`).
 //! - Miss → return the upstream label verbatim *and* record it via
@@ -10,9 +10,9 @@
 //!   entry.
 //!
 //! The dictionary is compiled into the binary via `include_str!`;
-//! updates ship as new builds. There is **no** CI coverage assertion —
+//! updates ship as new builds. There is no CI coverage assertion —
 //! the dictionary is grown incrementally as new upstream labels are
-//! observed in 03 / 04 PR work.
+//! observed.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};

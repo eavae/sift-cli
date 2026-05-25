@@ -19,37 +19,50 @@ use crate::output::Format;
 pub enum ReportCmd {
     #[command(
         about = "Income statement (营业总收入 / 净利润 / 毛利率 …)",
-        long_about = "Income statement (营业总收入 / 净利润 / 毛利率 …).\n\n\
-                      Example:\n  \
-                      sift report income 600519 --last 4"
+        after_long_help = "Examples:\n  \
+                           sift report income 600519 --last 4 --unit yi\n  \
+                           sift report income 600519 600036 --period 2024A,2023A --scope parent --format tsv\n  \
+                           sift report income 600519 --start 2020 --end 2024 --annual --items 营业总收入,净利润\n  \
+                           sift report income 00700 --period 2023A                          # HK: omit --items (different vocab)\n  \
+                           sift report income 600519 --last 8 --source eastmoney            # pin upstream for repro"
     )]
     Income(StatementArgs),
     #[command(
         about = "Balance sheet (资产总计 / 负债合计 / 股东权益 …)",
-        long_about = "Balance sheet (资产总计 / 负债合计 / 股东权益 …).\n\n\
-                      Example:\n  \
-                      sift report balance 00700 --period 2024A,2023A"
+        after_long_help = "Examples:\n  \
+                           sift report balance 600519 --last 4 --unit yi\n  \
+                           sift report balance 600519 600036 --period 2024A --scope parent --format tsv\n  \
+                           sift report balance 600519 --start 2020 --end 2024 --annual --items 资产总计,负债合计\n  \
+                           sift report balance 00700 --period 2023A                         # HK: omit --items (different vocab)\n  \
+                           sift report balance 600519 --period 2024Q3 --source sina         # pin upstream"
     )]
     Balance(StatementArgs),
     #[command(
         about = "Cashflow statement (经营 / 投资 / 筹资活动现金流量 …)",
-        long_about = "Cashflow statement (经营 / 投资 / 筹资活动现金流量 …).\n\n\
-                      Example:\n  \
-                      sift report cashflow 600519 --start 2020 --end 2024 --annual"
+        after_long_help = "Examples:\n  \
+                           sift report cashflow 600519 --last 4 --unit yi\n  \
+                           sift report cashflow 600519 --start 2020 --end 2024 --annual --format tsv\n  \
+                           sift report cashflow 600519 600036 --period 2024A --scope parent\n  \
+                           sift report cashflow 600519 --period 2024H1 --items 经营活动产生的现金流量净额"
     )]
     Cashflow(StatementArgs),
     #[command(
         about = "Key financial indicators (ROE / EPS / 毛利率 / 资产负债率 …)",
-        long_about = "Key financial indicators (ROE / EPS / 毛利率 / 资产负债率 …).\n\n\
-                      Example:\n  \
-                      sift report indicator 600519 --last 8"
+        after_long_help = "Examples:\n  \
+                           sift report indicator 600519 --last 8\n  \
+                           sift report indicator 600519 --start 2020 --end 2024 --annual --items ROE,EPS,毛利率\n  \
+                           sift report indicator 600519 600036 --period 2024A --format tsv\n  \
+                           sift report indicator 600519 --last 4 --source eastmoney\n\n\
+                           Note: HK indicator is not yet implemented — for 00700 et al, use `report income/balance/cashflow` instead."
     )]
     Indicator(StatementArgs),
     #[command(
         about = "List the report periods available upstream for a symbol",
-        long_about = "List the report periods available upstream for a symbol.\n\n\
-                      Example:\n  \
-                      sift report periods 600519"
+        after_long_help = "Examples:\n  \
+                           sift report periods 600519                          # A-share via EM income-date list\n  \
+                           sift report periods 00700                           # HK via EM income long-table\n  \
+                           sift report periods 600519 --source eastmoney       # explicit pin\n  \
+                           sift report periods 600519 --format tsv | awk -F'\\t' '!/^#/ {print $1}'   # bare period list"
     )]
     Periods(PeriodsArgs),
 }
@@ -349,17 +362,21 @@ fn emit_unmapped_hint() {
 // `periods` subcommand
 // ---------------------------------------------------------------------------
 
-fn run_periods(args: PeriodsArgs, ctx: &ReportContext, _fmt: Format) -> Result<(), SiftError> {
+fn run_periods(args: PeriodsArgs, ctx: &ReportContext, fmt: Format) -> Result<(), SiftError> {
     let sym = Symbol::parse(&args.symbol)?;
     let pinned = args.source.as_source_tag().map(SourceTag::as_str);
     let items = list_periods_union(&sym, ctx, pinned)?;
-    // Render: period_end / period_type / source — one line per
-    // (date, source) pair, newest first (sort is done by the fetch
-    // helper).
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
     use std::io::Write;
-    writeln!(handle, "period\tperiod_type\tsource").ok();
+    // Header: `#`-prefixed in TSV so `awk '!/^#/'` / pandas `comment='#'`
+    // skip it; bare in the human Table view.
+    let header = if matches!(fmt, Format::Tsv) {
+        "#period\tperiod_type\tsource"
+    } else {
+        "period\tperiod_type\tsource"
+    };
+    writeln!(handle, "{header}").ok();
     for (date, pt, name) in items {
         writeln!(
             handle,

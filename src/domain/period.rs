@@ -126,7 +126,7 @@ impl Period {
     }
 
     /// Construct from a `Date`, auto-normalizing aligned ends.
-    fn from_date(d: Date) -> Self {
+    pub fn from_date(d: Date) -> Self {
         match PeriodType::from_date(d) {
             Some(PeriodType::Annual) => Self::Annual(d.year()),
             Some(PeriodType::H1) => Self::H1(d.year()),

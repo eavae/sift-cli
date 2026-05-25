@@ -178,10 +178,19 @@ pub fn a_wide_to_rows(entry: &Map<String, Value>, q: &Query) -> Vec<FinancialRow
 /// Filter EM-returned date strings against the user's requested
 /// periods. EM step 1 returns every report end it has on file (often
 /// 20+ rows); we only fetch step 2 for what was asked.
+///
+/// EM may serve dates as `"2024-12-31 00:00:00"` (with timestamp).
+/// The returned strings are normalized to bare `YYYY-MM-DD` so the
+/// step-2 URL builder can `join(",")` them safely — an embedded
+/// space would trip reqwest with `invalid uri character`.
 pub fn filter_dates(all: Vec<String>, requested: &[crate::domain::Period]) -> Vec<String> {
     let allowed: HashSet<Date> = requested.iter().map(|p| p.end_date()).collect();
     all.into_iter()
-        .filter(|s| parse_em_date(s).map(|d| allowed.contains(&d)).unwrap_or(false))
+        .filter_map(|s| {
+            parse_em_date(&s)
+                .filter(|d| allowed.contains(d))
+                .map(|_| s.split(' ').next().unwrap_or(&s).to_owned())
+        })
         .collect()
 }
 

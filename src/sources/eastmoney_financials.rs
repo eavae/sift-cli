@@ -139,6 +139,22 @@ impl FinancialSource for EastmoneyFinancialSource {
             (Market::Us, _) => us_three::fetch(self, q, http),
         }
     }
+
+    /// A-share uses EM's income-statement date endpoint; HK uses the
+    /// HKF10 cashflow summary endpoint (one HTTP call each, both reuse
+    /// machinery from the corresponding `fetch` paths). US falls back
+    /// to empty until `us_three::fetch` itself is unstubbed.
+    fn list_periods(
+        &self,
+        symbol: &crate::domain::Symbol,
+        http: &HttpClient,
+    ) -> Result<Vec<crate::domain::Period>, SiftError> {
+        match symbol.market {
+            Market::CnA => a_three::list_periods_a(self, symbol, http),
+            Market::Hk => hk_three::list_periods_hk(self, symbol, http),
+            Market::Us => Ok(Vec::new()),
+        }
+    }
 }
 
 /// Factory returning a boxed source for the global registry. Story 05

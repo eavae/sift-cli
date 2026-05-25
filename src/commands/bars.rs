@@ -55,30 +55,22 @@ pub struct BarsArgs {
     #[arg(long, conflicts_with_all = &["start", "end"])]
     pub limit: Option<usize>,
 
-    /// Adjustment mode: `pre` (pre-adjusted, default), `none` (no
-    /// adjustment), `post` (post-adjusted). The default is `pre`
-    /// because pre-adjusted prices are what almost every backtest /
-    /// chart consumer expects — they keep the most recent price as
-    /// the anchor and rewrite history so dividends / splits don't
-    /// create artificial gaps. Pass `--adjust none` if you need the
-    /// raw broker-reported closes.
+    /// Price adjustment: `pre` (default — dividends / splits folded
+    /// back into history, anchored at the latest close), `none` (raw
+    /// broker closes), or `post`.
     #[arg(long, value_enum, default_value_t = AdjustArg::Pre)]
     pub adjust: AdjustArg,
 
-    /// Bar period: `daily` (default), `weekly`, or `monthly`.
-    /// Quarterly / yearly are intentionally not supported — Tencent
-    /// does not serve them and we do not synthesize them via local
-    /// resample. For coarser aggregation, pipe `--format tsv` into
-    /// pandas (`df.resample('Q'/'Y').agg(...)`).
+    /// Bar granularity: `daily` (default), `weekly`, or `monthly`.
+    /// Quarterly / yearly are intentionally unsupported; resample
+    /// downstream (e.g. pandas `df.resample('Q')`).
     #[arg(long, value_enum, default_value_t = PeriodArg::Daily)]
     pub period: PeriodArg,
 
-    /// Upstream data source: `tencent` (default) or `eastmoney`.
-    /// Tencent is the default because it is consistently reachable
-    /// across the networks sift has been tested on; EM is kept as
-    /// an opt-in for users who want EM's natively-reported
-    /// `amount` / `pct_change` / `change` / `amplitude_pct` instead
-    /// of the client-side computed values Tencent requires.
+    /// Upstream: `tencent` (default — broader connectivity) or
+    /// `eastmoney` (natively reports `amount` / `pct_change` /
+    /// `change` / `amplitude_pct`; tencent values are computed
+    /// client-side).
     #[arg(long, value_enum, default_value_t = SourceArg::Tencent)]
     pub source: SourceArg,
 }

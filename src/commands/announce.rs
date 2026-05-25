@@ -42,18 +42,19 @@ use crate::sources::cninfo::ResolvedSymbol;
 pub enum AnnounceCmd {
     #[command(
         about = "Print the 中文 `--type` values understood by `announce list`",
-        long_about = "Print the 中文 `--type` values understood by `announce list`.\n\n\
-                      Example:\n  \
-                      sift announce types"
+        after_long_help = "Examples:\n  \
+                           sift announce types\n  \
+                           sift announce types --format tsv | awk -F'\\t' '!/^#/ {print $1}'    # bare 中文 list"
     )]
     Types,
     #[command(
         about = "List announcements for one or more symbols, or scan the whole market by date",
-        long_about = "List announcements for one or more symbols, or scan the whole market by date.\n\n\
-                      Examples:\n  \
-                      sift announce list 600519 --type 年报\n  \
-                      sift announce list 600519 00700 --start 2024-01-01 --end 2024-06-30\n  \
-                      sift announce list --start 2025-04-01 --end 2025-04-30 --keyword 减持"
+        after_long_help = "Examples:\n  \
+                           sift announce list 600519 --type 年报 --limit 5\n  \
+                           sift announce list 600519 00700 --start 2024-01-01 --end 2024-06-30\n  \
+                           sift announce list --start 2025-04-01 --end 2025-04-30 --keyword 减持 --limit 100   # whole-market scan\n  \
+                           sift announce list 600519 --type 定期报告 --start 2023-01-01 --end 2025-12-31      # aggregate 4 sub-types\n  \
+                           sift announce list 600519 --type 年报 --format json | sift announce download <id> -o ./pdfs"
     )]
     List(ListArgs),
     #[command(
@@ -61,17 +62,19 @@ pub enum AnnounceCmd {
         long_about = "Show metadata for a single announcement.\n\n\
                       cninfo has no by-id metadata endpoint, so for ids not already in the local record \
                       cache `show` reads NDJSON rows from stdin. The typical pipeline is to feed it \
-                      `announce list --format json` output.\n\n\
-                      Example:\n  \
-                      sift announce list 600519 --format json | sift announce show 1219506510"
+                      `announce list --format json` output.",
+        after_long_help = "Examples:\n  \
+                           sift announce list 600519 --format json | sift announce show 1219506510\n  \
+                           sift announce show 1219506510 --format json     # cache hit only; no stdin needed"
     )]
     Show(ShowArgs),
     #[command(
         about = "Download announcement PDFs to a local directory",
         long_about = "Download announcement PDFs to a local directory.\n\n\
-                      URL context for un-cached ids comes from stdin NDJSON (same pipeline as `show`).\n\n\
-                      Example:\n  \
-                      sift announce list 600519 --format json | sift announce download 1219506510 -o ./pdfs"
+                      URL context for un-cached ids comes from stdin NDJSON (same pipeline as `show`).",
+        after_long_help = "Examples:\n  \
+                           sift announce list 600519 --type 年报 --format json | sift announce download 1219506510 -o ./pdfs\n  \
+                           sift announce list 600519 --type 年报 --limit 5 --format json | sift announce download $(... | jq -r .id) -o ./pdfs   # batch"
     )]
     Download(DownloadArgs),
 }
@@ -88,7 +91,7 @@ pub struct ListArgs {
     /// Announcement type (中文). Use `sift announce types` for the
     /// full list. The aggregate value `定期报告` triggers four cninfo
     /// sub-queries (年报 / 半年报 / 一季报 / 三季报) and merges results.
-    #[arg(long = "type", value_parser = type_value_parser())]
+    #[arg(long = "type", value_parser = type_value_parser(), hide_possible_values = true)]
     pub r#type: Option<String>,
 
     /// Free-text keyword. Passed through to cninfo's `searchkey`.

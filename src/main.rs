@@ -10,7 +10,7 @@ mod output;
 mod pdf;
 mod sources;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 
 use crate::app::AppContext;
 use crate::cache::file::FileCache;
@@ -22,7 +22,22 @@ fn main() {
     // clap's own argument errors (unknown flag, `--format table`, etc.)
     // are written to stderr and exited with code 2 by `parse()`; they do
     // **not** flow through `SiftError`.
-    let cli = Cli::parse();
+    //
+    // `--format` is `global = true` so it appears on every subcommand's
+    // help — but `extract` emits Markdown and ignores the flag. To hide
+    // it just on extract, we drive a `try_get_matches_from_mut` against
+    // a no-arg input first (which forces clap to propagate global args
+    // down into each subcommand's arg list) and *then* use
+    // `mut_subcommand` + `mut_arg` to flip its `hide` bit. The
+    // throwaway parse always fails and is discarded.
+    let mut cmd = Cli::command();
+    let _ = cmd.try_get_matches_from_mut(["sift"]);
+    let cmd = cmd.mut_subcommand("extract", |c| c.mut_arg("format", |a| a.hide(true)));
+    let matches = cmd.get_matches();
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(c) => c,
+        Err(e) => e.exit(),
+    };
     let fmt = cli.format.unwrap_or(output::Format::Table);
 
     let result: Result<(), SiftError> = match cli.command {

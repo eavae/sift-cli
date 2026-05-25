@@ -125,6 +125,42 @@ pub(crate) fn fetch(
     Ok(rows)
 }
 
+/// List every report period EM has on file for an HK symbol.
+/// Reuses the income-statement long-table endpoint
+/// (`RPT_HKF10_FN_INCOME_PC`) — every issuer files income, and one
+/// HTTP call returns all `REPORT_DATE`s embedded across the rows.
+/// The companion summary endpoint
+/// (`RPT_CUSTOM_HKSK_APPFN_CASHFLOW_SUMMARY`) is not usable here:
+/// upstream rejects it with `success:false, code:9501`.
+pub(super) fn list_periods_hk(
+    src: &EastmoneyFinancialSource,
+    symbol: &Symbol,
+    http: &HttpClient,
+) -> Result<Vec<Period>, SiftError> {
+    let probe = Query {
+        symbol: symbol.clone(),
+        statement: Statement::Income,
+        periods: Vec::new(),
+        scope: Scope::Consolidated,
+    };
+    let url = build_long_url(&src.urls().datacenter_base, &probe);
+    let bytes = http.get_bytes(&url)?;
+    let resp: LongResp = serde_json::from_slice(&bytes)
+        .map_err(|e| SiftError::Internal(format!("eastmoney HK long parse: {e}")))?;
+
+    let mut dates: std::collections::BTreeSet<Date> = std::collections::BTreeSet::new();
+    for entry in &resp.result.data {
+        if let Some(d) = entry
+            .get("REPORT_DATE")
+            .and_then(|v| v.as_str())
+            .and_then(translate::parse_em_date)
+        {
+            dates.insert(d);
+        }
+    }
+    Ok(dates.into_iter().map(Period::from_date).collect())
+}
+
 fn fetch_meta(
     src: &EastmoneyFinancialSource,
     q: &Query,

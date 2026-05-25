@@ -39,7 +39,10 @@ pub struct ExtractArgs {
     #[arg(long)]
     pub pages: Option<String>,
 
-    /// Extraction mode. Defaults to `fast` (local pdf-oxide).
+    /// Extraction mode: `fast` (default — local pdf-oxide, text-layer
+    /// only, zero API calls), `fine` (cloud OCR via PaddleOCR; needs
+    /// PADDLEOCR_API_BASE+TOKEN or API_KEY+SECRET, billed per call),
+    /// or `auto` (fast first; escalate scanned pages to `fine`).
     #[arg(long, value_enum, default_value_t = Mode::Fast)]
     pub mode: Mode,
 

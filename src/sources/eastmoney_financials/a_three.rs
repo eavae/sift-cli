@@ -13,7 +13,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::domain::{FinancialRow, Query, Scope, Statement, Symbol};
+use crate::domain::{FinancialRow, Period, Query, Scope, Statement, Symbol};
 use crate::error::SiftError;
 use crate::http::HttpClient;
 
@@ -115,6 +115,29 @@ fn resolve_company_type(
         "eastmoney: no companyType in {COMPANY_TYPES:?} returned data for {code}; \
          symbol may be unsupported"
     )))
+}
+
+/// List every report period EM has on file for an A-share symbol.
+/// Reuses the income-statement date endpoint (`lrbDateAjaxNew`) — EM
+/// publishes the same period set across income / balance / cashflow,
+/// and every company files an income statement, so a single call is
+/// sufficient. Mis-shaped or stale dates are dropped silently.
+pub(super) fn list_periods_a(
+    src: &EastmoneyFinancialSource,
+    symbol: &Symbol,
+    http: &HttpClient,
+) -> Result<Vec<Period>, SiftError> {
+    let code = translate::a_share_code(symbol);
+    let ct = resolve_company_type(src, symbol, "lrb", &code, http)?;
+    let raw = list_dates(&src.urls().hsf10_base, ct, "lrb", &code, http)?;
+    let mut periods: Vec<Period> = raw
+        .iter()
+        .filter_map(|s| translate::parse_em_date(s))
+        .map(Period::from_date)
+        .collect();
+    periods.sort_by_key(Period::end_date);
+    periods.dedup();
+    Ok(periods)
 }
 
 /// Pull the date list under a known `companyType`.

@@ -63,15 +63,39 @@ Agent 内部调用：
 
 ## 安装
 
+### 预编译二进制（推荐）
+
+一行命令搞定 —— 自动检测系统 + 架构，从 GitHub Releases 下载，丢到 `~/.local/bin`：
+
 ```bash
-git clone https://github.com/<your-org>/sift.git
-cd sift
+curl -fsSL https://raw.githubusercontent.com/eavae/sift-cli/main/scripts/install.sh | bash
+```
+
+可选环境变量：
+
+```bash
+SIFT_VERSION=v0.1.0 \
+SIFT_INSTALL_DIR=/usr/local/bin \
+  curl -fsSL https://raw.githubusercontent.com/eavae/sift-cli/main/scripts/install.sh | bash
+```
+
+支持平台：`x86_64-unknown-linux-gnu`、`aarch64-unknown-linux-gnu`、`x86_64-apple-darwin`、`aarch64-apple-darwin`。脚本会自动校验 Release 附带的 SHA-256 校验和。
+
+### 源码编译（备选）
+
+如果你的平台不在 Release 覆盖范围里，或者想跑 `main` 最新代码：
+
+```bash
+git clone https://github.com/eavae/sift-cli.git
+cd sift-cli
 ./install.sh                                  # 编译 release 并复制到 ~/.local/bin
 # 或手动：
 cargo build --release && cp target/release/sift ~/.local/bin/
 ```
 
 > 首次编译约 3 分钟（DuckDB 捆绑编译），增量秒级。需要 Rust ≥ 1.95。
+
+### 验证
 
 确认 `~/.local/bin` 在 `PATH` 里，然后：
 

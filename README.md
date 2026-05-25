@@ -63,15 +63,39 @@ Agent calls:
 
 ## Install
 
+### Prebuilt binary (recommended)
+
+One-liner — auto-detects OS + arch, downloads from GitHub Releases, drops a single binary into `~/.local/bin`:
+
 ```bash
-git clone https://github.com/<your-org>/sift.git
-cd sift
+curl -fsSL https://raw.githubusercontent.com/eavae/sift-cli/main/scripts/install.sh | bash
+```
+
+Optional env overrides:
+
+```bash
+SIFT_VERSION=v0.1.0 \
+SIFT_INSTALL_DIR=/usr/local/bin \
+  curl -fsSL https://raw.githubusercontent.com/eavae/sift-cli/main/scripts/install.sh | bash
+```
+
+Supported targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. The script verifies the SHA-256 checksum that ships next to each archive.
+
+### Build from source (fallback)
+
+If your platform isn't covered by the releases, or you want bleeding-edge `main`:
+
+```bash
+git clone https://github.com/eavae/sift-cli.git
+cd sift-cli
 ./install.sh                                  # builds release + copies to ~/.local/bin
 # or manually:
 cargo build --release && cp target/release/sift ~/.local/bin/
 ```
 
 > First build ~3 min (DuckDB statically linked), incremental seconds. Requires Rust ≥ 1.95.
+
+### Verify
 
 Make sure `~/.local/bin` is on `PATH`, then:
 

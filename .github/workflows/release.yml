@@ -1,0 +1,144 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0). The tag must already exist."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: macos-13
+            target: x86_64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build (release)
+        shell: bash
+        run: cargo build --release --target ${{ matrix.target }} --bin sift
+
+      - name: Package archive
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.name }}"
+          target="${{ matrix.target }}"
+          name="sift-${tag}-${target}"
+          stage="$(mktemp -d)"
+          mkdir -p "$stage/$name"
+
+          cp "target/${target}/release/sift" "$stage/$name/sift"
+          cp README.md README_cn.md "$stage/$name/" 2>/dev/null || true
+          # LICENSE is optional; only copy if present.
+          [ -f LICENSE ] && cp LICENSE "$stage/$name/" || true
+
+          archive="${name}.tar.gz"
+          tar -C "$stage" -czf "$archive" "$name"
+
+          # SHA-256 for the install script to verify against if it wants to.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" > "${archive}.sha256"
+          else
+            shasum -a 256 "$archive" > "${archive}.sha256"
+          fi
+
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "sha=${archive}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ steps.pkg.outputs.archive }}
+            ${{ steps.pkg.outputs.sha }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          find dist -type f \( -name "*.tar.gz" -o -name "*.sha256" \) -exec mv {} out/ \;
+          ls -la out
+
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          generate_release_notes: true
+          files: |
+            out/*.tar.gz
+            out/*.sha256

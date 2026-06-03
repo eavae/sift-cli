@@ -239,8 +239,9 @@ impl<'a> OAuthClient<'a> {
     /// Fetch `parse_result_url` and assemble one [`PageResult`] per
     /// page in the response. Each page's `layouts[*].text` and
     /// `tables[*].markdown` are joined with blank lines; images
-    /// come from `images[*].{layout_id, data_url}` (data URIs
-    /// decoded to bytes).
+    /// come from `images[*].{layout_id, data_url}`, where `data_url`
+    /// is either an inline `data:` URI (decoded) or a remote presigned
+    /// URL (fetched) — see [`fetch_or_decode_data_url`].
     fn download_results(&self, task: &Value) -> Result<Vec<PageResult>, SiftError> {
         let parse_url = task
             .get("parse_result_url")
@@ -300,7 +301,7 @@ impl<'a> OAuthClient<'a> {
                     if layout_id.is_empty() || data_url.is_empty() {
                         continue;
                     }
-                    let raw = decode_data_url(data_url, i, layout_id)?;
+                    let raw = fetch_or_decode_data_url(self.http, data_url, i, layout_id)?;
                     images.push((layout_id.to_owned(), raw));
                 }
             }
@@ -357,12 +358,31 @@ fn check_baidu_error(v: &Value, stage: &str) -> Result<(), SiftError> {
     )))
 }
 
-/// Decode a `data:` URL of the form `data:image/png;base64,XXXX`.
-/// Plain `http(s)` URLs aren't valid here — the upstream embeds
-/// rendered figures directly so the polling response is
-/// self-contained; if a future API change starts using URLs, add
-/// a `fetch_or_decode_data_url` variant analogous to the token
-/// backend's helper.
+/// Resolve one `images[*].data_url` to raw bytes. The field is
+/// misnamed: small regions arrive as an inline `data:image/...;base64,`
+/// URI, but figure/chart regions (e.g. `*-layout-11`) come back as a
+/// remote presigned URL. Fetch the URLs via the shared [`HttpClient`];
+/// decode the inline ones locally. Mirrors the token backend's
+/// `fetch_or_decode_image`; errors carry the page + layout id so a
+/// malformed response surfaces actionably.
+fn fetch_or_decode_data_url(
+    http: &HttpClient,
+    s: &str,
+    page_idx: usize,
+    layout_id: &str,
+) -> Result<Vec<u8>, SiftError> {
+    let trimmed = s.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return http.get_bytes(trimmed).map_err(|e| {
+            SiftError::Network(format!(
+                "baidu parse_result image fetch: page[{page_idx}].images.{layout_id}: {e}"
+            ))
+        });
+    }
+    decode_data_url(trimmed, page_idx, layout_id)
+}
+
+/// Decode an inline `data:` URL of the form `data:image/png;base64,XXXX`.
 fn decode_data_url(s: &str, page_idx: usize, layout_id: &str) -> Result<Vec<u8>, SiftError> {
     let (_, after_comma) = s.trim().split_once(',').ok_or_else(|| {
         SiftError::Internal(format!(
@@ -587,6 +607,64 @@ mod tests {
         m_submit.assert();
         m_query.assert();
         m_parse.assert();
+    }
+
+    /// Figure/chart regions (`*-layout-11`) arrive as a remote presigned
+    /// URL in `data_url`, not an inline `data:` URI. The decoder must
+    /// fetch those rather than choke on the missing comma.
+    #[test]
+    fn remote_image_url_in_data_url_is_fetched() {
+        let mut server = mockito::Server::new();
+        let _g = EnvGuard::set(&server.url(), "ak", "sk");
+
+        server
+            .mock("POST", "/oauth/2.0/token")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body(token_body())
+            .create();
+        server
+            .mock("POST", "/rest/2.0/brain/online/v2/paddle-vl-parser/task")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body(submit_body("task-url"))
+            .create();
+        let img_path = "/bos/fig-layout-11.jpg";
+        let img_url = format!("{}{}", server.url(), img_path);
+        let m_img = server
+            .mock("GET", img_path)
+            .with_status(200)
+            .with_body(b"\xff\xd8\xff JPEG bytes")
+            .expect(1)
+            .create();
+        let parse_path = "/cdn/url.json";
+        let parse_url = format!("{}{}", server.url(), parse_path);
+        server
+            .mock("POST", "/rest/2.0/brain/online/v2/paddle-vl-parser/task/query")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body(query_body_success(&parse_url))
+            .create();
+        server
+            .mock("GET", parse_path)
+            .with_status(200)
+            .with_body(parse_result_body(&[(
+                &["figure caption text"],
+                &[],
+                &[("remote-layout-11", &img_url)],
+            )]))
+            .create();
+
+        let http = HttpClient::new();
+        let client = OAuthClient::from_env(&http).expect("env set above");
+        let pages = client.parse_batch(b"%PDF stub").unwrap();
+
+        assert_eq!(pages.len(), 1);
+        assert!(pages[0].markdown.contains("figure caption text"));
+        assert_eq!(pages[0].images.len(), 1);
+        assert_eq!(pages[0].images[0].0, "remote-layout-11");
+        assert_eq!(pages[0].images[0].1, b"\xff\xd8\xff JPEG bytes");
+        m_img.assert();
     }
 
     #[test]

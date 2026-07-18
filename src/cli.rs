@@ -69,7 +69,12 @@ pub enum Command {
                            sift search 茅台                                         # name substring\n  \
                            sift search 600 --limit 20                              # code prefix, expand result cap\n  \
                            sift search gzmt --limit 3 --no-cache                   # pinyin initials, bypass listing cache\n  \
-                           sift search 银行 --format json | jq -r .code | xargs sift quote   # search → quote pipeline"
+                           sift search 银行 --format json | jq -r .code | xargs sift quote   # search → quote pipeline\n\n\
+                           search resolves a name/pinyin/code to a symbol; every other command takes that symbol.\n\n\
+                           See also:\n  \
+                           sift report income 600519 --last 4    Financials for a hit\n  \
+                           sift quote 600519                     Live price for a hit\n  \
+                           sift announce list 600519             Filings for a hit"
     )]
     Search(SearchArgs),
     #[command(
@@ -98,7 +103,12 @@ pub enum Command {
                            sift announce list 600519 00700 --start 2024-01-01 --end 2024-06-30\n  \
                            sift announce list --start 2025-04-01 --end 2025-04-30 --keyword 减持 --limit 100\n  \
                            sift announce list 600519 --type 定期报告 --start 2023-01-01 --end 2025-12-31    # aggregate 4 sub-types\n  \
-                           sift announce list 600519 --format json | sift announce download <id> -o ./pdfs"
+                           sift announce list 600519 --format json | sift announce download <id> -o ./pdfs\n\n\
+                           announce deals in raw filing documents (PDFs). For parsed financial line items, use \
+                           `report` instead; to turn a downloaded PDF into text, use `extract`.\n\n\
+                           See also:\n  \
+                           sift extract 1219506510 --pages 1-20 --mode auto    Turn a downloaded PDF into Markdown\n  \
+                           sift report income 600519 --last 4                  Structured numbers instead of raw filings"
     )]
     Announce {
         #[command(subcommand)]
@@ -110,7 +120,13 @@ pub enum Command {
                            sift extract 1219506510 --pages 1-5                              # cached PDF, first 5 pages\n  \
                            sift extract ./report.pdf --pages 3,7,10-12 --mode auto          # local PDF, OCR-on-demand\n  \
                            sift extract 1219506510 --mode auto --pages 1-30 > report.md     # auto + redirect\n  \
-                           sift announce download 1219506510 -o /tmp && sift extract 1219506510 --mode auto --pages 1-30"
+                           sift announce download 1219506510 -o /tmp && sift extract 1219506510 --mode auto --pages 1-30\n\n\
+                           Extracting by id needs the PDF cached first (`announce download <id>`); a local path \
+                           works with no fetch. Output is prose/tables as Markdown — for structured financial \
+                           figures use `report`, not text extraction.\n\n\
+                           See also:\n  \
+                           sift announce list 600519 --type 年报 --limit 5    Find the announcement id to extract\n  \
+                           sift announce download 1219506510 -o /tmp          Cache the PDF before extract-by-id"
     )]
     Extract(crate::commands::extract::ExtractArgs),
     #[command(
@@ -118,7 +134,12 @@ pub enum Command {
         after_long_help = "Examples:\n  \
                            sift quote 600519\n  \
                            sift quote 600519 00700 sh000001 --format tsv\n  \
-                           sift search 银行 --limit 5 --format json | jq -r .code | xargs sift quote   # batch from search"
+                           sift search 银行 --limit 5 --format json | jq -r .code | xargs sift quote   # batch from search\n\n\
+                           quote is a realtime snapshot — fetched fresh every call, never cached, and not written \
+                           to the fact store (which holds report-period fundamentals, not prices).\n\n\
+                           See also:\n  \
+                           sift bars 600519 --limit 30    Historical price series instead of a single snapshot\n  \
+                           sift search 银行               Resolve names to codes to feed quote"
     )]
     Quote(crate::commands::quote::QuoteArgs),
     #[command(
@@ -127,7 +148,12 @@ pub enum Command {
                            sift bars 600519 --limit 30                                              # last 30 daily bars\n  \
                            sift bars 600519 00700 --period weekly --limit 52 --format tsv           # multi-symbol, 1 year weekly\n  \
                            sift bars 600519 --start 2024-01-01 --end 2024-12-31 --adjust pre        # explicit range, pre-adjusted\n  \
-                           sift bars 600519 --period monthly --limit 24 --source eastmoney         # 2y monthly, EM upstream"
+                           sift bars 600519 --period monthly --limit 24 --source eastmoney         # 2y monthly, EM upstream\n\n\
+                           bars is price history (OHLC) — like `quote`, it is market data, not fundamentals, and \
+                           does not feed the fact store. For financial statements over time use `report`.\n\n\
+                           See also:\n  \
+                           sift quote 600519                     Just the latest price\n  \
+                           sift report income 600519 --last 12   Fundamentals over time (into the fact store)"
     )]
     Bars(crate::commands::bars::BarsArgs),
     #[command(

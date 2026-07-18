@@ -6,19 +6,25 @@ use crate::output::Format;
 #[command(
     name = "sift",
     version,
-    about = "Pull CN A-share / HK stock data — listings, reports, announcements, extracts, quotes, bars — to stdout",
-    long_about = "Pull CN A-share / HK stock data — listings, reports, announcements, extracts, quotes, bars — to stdout.\n\n\
+    about = "Pull CN A-share / HK stock data (reports, announcements, quotes, bars) and analyze it locally with SQL.",
+    long_about = "Pull CN A-share / HK stock data — listings, reports, announcements, PDF extracts, quotes, bars — to stdout, \
+                  and build a local financial fact store you can query with SQL.\n\n\
                   Output is Unix-friendly TSV / NDJSON by default; omit `--format` for a human-aligned table. \
                   All commands accept multiple symbols where it makes sense and degrade gracefully (per-symbol failures \
-                  surface as `[warn]` lines on stderr while successful rows still reach stdout).",
-    after_long_help = "Examples:\n  \
-                       sift search gzmt --limit 3                                              # pinyin → top 3 matches\n  \
-                       sift report income 600519 600036 --last 4 --scope parent --unit yi      # multi-symbol, parent-only, in 亿\n  \
-                       sift report indicator 600519 --start 2020 --end 2024 --annual           # 5-year annual ratios (A-share)\n  \
-                       sift announce list 600519 --type 定期报告 --start 2024-01-01 --end 2025-12-31 --limit 50\n  \
-                       sift announce list 600519 --format json | sift announce download <id> -o ./pdfs\n  \
-                       sift extract 1219506510 --pages 1-20 --mode auto > report.md           # OCR-escalate scanned pages\n  \
-                       sift bars 600519 00700 --period weekly --limit 52 --format tsv > weekly.tsv\n\n\
+                  surface as `[warn]` lines on stderr while successful rows still reach stdout).\n\n\
+                  `report` and `market` also feed a local DuckDB fact store at ~/.sift/facts.duckdb — query it with \
+                  `sift sql`, curate it with `sift fact` / `metric` / `map`.",
+    after_long_help = "Common tasks:\n  \
+                       Find a symbol?             sift search 茅台\n  \
+                       Pull a financial report?   sift report income 600519 --last 4 --unit yi\n  \
+                       Browse announcements?      sift announce list 600519 --type 年报 --limit 5\n  \
+                       PDF → Markdown?            sift extract 1219506510 --pages 1-20 --mode auto\n  \
+                       Live quote / history?      sift quote 600519  |  sift bars 600519 --limit 30\n  \
+                       Analyze locally with SQL?  sift report income 600519 --last 12   # ingests into the fact store\n                              \
+                                                  sift sql \"SELECT period,value FROM v_facts WHERE symbol='600519.CN-A' AND raw_key='TOTAL_OPERATE_INCOME' ORDER BY period_end\"\n  \
+                       Screen the whole market?   sift market --period 2024A --where 'WEIGHTAVG_ROE>15' --sort WEIGHTAVG_ROE --desc\n\n\
+                       The fact store (~/.sift/facts.duckdb) is fed automatically by `report` and `market`; query it with \
+                       `sift sql`, curate it with `sift fact` / `metric` / `map`.\n\n\
                        Run `sift <command> --help` for command-specific options."
 )]
 pub struct Cli {
@@ -73,7 +79,13 @@ pub enum Command {
                            sift report balance 600519 600036 --period 2024A,2023A --scope parent --format tsv\n  \
                            sift report indicator 600519 --start 2020 --end 2024 --annual --items ROE加权,EPS,毛利率\n  \
                            sift report cashflow 600519 --period 2024Q3 --source eastmoney    # pin upstream for repro\n  \
-                           sift report periods 600519                                        # what's available?"
+                           sift report periods 600519                                        # what's available?\n\n\
+                           Fetched rows are ingested into the local fact store by default (raw values, best-effort; \
+                           `--no-ingest` opts out) — so after a `report` you can analyze the same data with SQL.\n\n\
+                           See also:\n  \
+                           sift sql \"SELECT period,value FROM v_facts WHERE symbol='600519.CN-A' AND raw_key='TOTAL_OPERATE_INCOME' ORDER BY period_end\"\n                              \
+                                                                          Query the rows this command just ingested\n  \
+                           sift market --period 2024A                     Same data across the whole market, one period"
     )]
     Report {
         #[command(subcommand)]
@@ -127,7 +139,12 @@ pub enum Command {
                            CHECK / foreign-key / NOT NULL are still enforced, so it can delete and fix \
                            but not insert invalid data; DDL (DROP/ALTER) is unrestricted. Dangerous:\n  \
                            sift sql --write \"DELETE FROM facts WHERE source='screen' AND fiscal_year<2015\"\n  \
-                           sift sql --write \"UPDATE facts SET currency='CNY' WHERE currency IS NULL\""
+                           sift sql --write \"UPDATE facts SET currency='CNY' WHERE currency IS NULL\"\n\n\
+                           `sql` only sees what has been ingested. To fill the store first:\n\n\
+                           See also:\n  \
+                           sift report income 600519 --last 12    Fetch a report — auto-ingests into the store\n  \
+                           sift market --period 2024A             Ingest a whole-market snapshot (source=screen)\n  \
+                           sift metric add / sift map set         Standardize raw_key → std_key so v_facts.key is friendly"
     )]
     Sql(crate::commands::sql::SqlArgs),
     #[command(
@@ -135,7 +152,12 @@ pub enum Command {
         after_long_help = "Examples:\n  \
                            sift fact set --symbol 600519.CN-A --period 2024A --key employee_comp --value 1.5e9\n  \
                            printf '#symbol\\tfiscal_year\\tperiod_type\\traw_key\\tvalue\\n600519.CN-A\\t2024\\tannual\\temployee_comp\\t1.5e9\\n' | sift fact set\n  \
-                           sift fact rm --symbol 600519.CN-A --period 2024A --key employee_comp"
+                           sift fact rm --symbol 600519.CN-A --period 2024A --key employee_comp\n\n\
+                           Values are stored raw (unscaled); period is split into fiscal_year + period_type. \
+                           Omitted TSV columns default to source=manual, scope=na, qmode=na.\n\n\
+                           See also:\n  \
+                           sift sql \"SELECT * FROM v_facts WHERE source='manual'\"   Read back what you wrote\n  \
+                           sift metric add employee_comp --unit-kind amount        Register a std_key for a custom fact"
     )]
     Fact {
         #[command(subcommand)]
@@ -146,7 +168,12 @@ pub enum Command {
         after_long_help = "Examples:\n  \
                            sift metric add revenue --label 营业总收入 --unit-kind amount\n  \
                            printf '#std_key\\tlabel\\tunit_kind\\nroe\\t加权ROE\\tratio\\n' | sift metric add\n  \
-                           sift metric ls --format tsv"
+                           sift metric ls --format tsv\n\n\
+                           unit_kind is one of amount / ratio / per_share / shares / count / other. \
+                           A metric must exist before any mapping can point at it (`map set` is strict).\n\n\
+                           See also:\n  \
+                           sift map set --source eastmoney TOTAL_OPERATE_INCOME revenue   Point a raw label at a std_key\n  \
+                           sift sql \"SELECT DISTINCT raw_key FROM facts\"                   Find raw keys still needing a std_key"
     )]
     Metric {
         #[command(subcommand)]
@@ -157,7 +184,13 @@ pub enum Command {
         after_long_help = "Examples:\n  \
                            sift map set --source eastmoney TOTAL_OPERATE_INCOME revenue\n  \
                            printf '#source\\traw_key\\tstd_key\\neastmoney\\tWEIGHTAVG_ROE\\troe\\n' | sift map set\n  \
-                           sift map ls --source eastmoney --format tsv"
+                           sift map ls --source eastmoney --format tsv\n\n\
+                           Mappings apply at query time via the v_facts.key column — adding one standardizes \
+                           all matching history instantly, without rewriting facts. Strict: the std_key must \
+                           already be registered.\n\n\
+                           See also:\n  \
+                           sift metric add revenue --label 营业总收入        Register the target std_key first\n  \
+                           sift sql \"SELECT key,mapped FROM v_facts LIMIT 5\"   Confirm the mapping took effect"
     )]
     Map {
         #[command(subcommand)]
@@ -165,12 +198,18 @@ pub enum Command {
     },
     #[command(
         about = "Whole-market业绩报表 snapshot for one period (fetch → ingest → filter/print)",
-        after_long_help = "Examples:\n  \
+        after_long_help = "Examples (quote --where so the shell does not read `>` as redirection):\n  \
                            sift market --period 2024A --limit 20\n  \
-                           sift market --period 2024A --where WEIGHTAVG_ROE>15 --where XSMLL>30 --sort WEIGHTAVG_ROE --desc\n  \
+                           sift market --period 2024A --where 'WEIGHTAVG_ROE>15' --where 'XSMLL>30' --sort WEIGHTAVG_ROE --desc\n  \
                            sift market --period 2024A --market star --show TOTAL_OPERATE_INCOME,PARENT_NETPROFIT\n\n\
-                           The whole snapshot is ingested into the fact store (source=screen); for friendly-name \
-                           screening use `sift sql` over v_facts. `--where` here speaks raw EM columns."
+                           The whole snapshot is ingested into the fact store (source=screen), unaffected by \
+                           --where/--limit (those narrow the printout only). `--where` speaks raw EM columns \
+                           (WEIGHTAVG_ROE, TOTAL_OPERATE_INCOME, XSMLL, …); for friendly names (roe, revenue) \
+                           map the columns and screen via `sift sql` over v_facts.\n\n\
+                           See also:\n  \
+                           sift sql \"SELECT symbol,name,value FROM v_facts WHERE key='roe' AND period='2024A' ORDER BY value DESC\"\n                              \
+                                                                          Friendly-name screening after `map set … roe`\n  \
+                           sift report income 600519 --last 8             Per-symbol detail once you have candidates"
     )]
     Market(crate::commands::market::MarketArgs),
 }

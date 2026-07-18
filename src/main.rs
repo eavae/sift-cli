@@ -53,6 +53,8 @@ fn main() {
         Command::Sql(args) => run_sql(args, fmt, false),
         Command::SqlWrite(args) => run_sql(args, fmt, true),
         Command::Fact { cmd } => run_fact(cmd, fmt),
+        Command::Metric { cmd } => run_metric(cmd, fmt),
+        Command::Map { cmd } => run_map(cmd, fmt),
     };
 
     if let Err(e) = result {
@@ -268,4 +270,22 @@ fn run_fact(
 ) -> Result<(), SiftError> {
     let ctx = build_app_context(false, true);
     commands::fact::run(cmd, &ctx)
+}
+
+/// Build the AppContext for `sift metric {add,ls,rm}` and dispatch.
+fn run_metric(
+    cmd: crate::commands::metric::MetricCmd,
+    fmt: output::Format,
+) -> Result<(), SiftError> {
+    let ctx = build_app_context(false, true);
+    commands::metric::run(cmd, &ctx, fmt)
+}
+
+/// Build the AppContext for `sift map {set,ls,rm}` and dispatch.
+fn run_map(
+    cmd: crate::commands::map::MapCmd,
+    fmt: output::Format,
+) -> Result<(), SiftError> {
+    let ctx = build_app_context(false, true);
+    commands::map::run(cmd, &ctx, fmt)
 }

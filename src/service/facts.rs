@@ -14,18 +14,13 @@ use crate::domain::financial_row::{FinancialRow, Scope as DomainScope, Statement
 use crate::domain::period::{Period, PeriodType};
 use crate::domain::symbol::Symbol;
 use crate::error::SiftError;
+use crate::service::store;
 use crate::service::tsv::{self, col, FromTsvRow};
 use crate::store::{FactKey, FactRow, QMode, Scope};
 // Command-facing result types are surfaced through the service layer
 // so `commands/` never names `crate::store` directly (three-layer
 // discipline; see f6 README grep).
 pub use crate::store::{BatchOutcome, SqlOutcome};
-
-fn store(app: &AppContext) -> Result<&crate::store::FactStore, SiftError> {
-    app.facts.as_ref().ok_or_else(|| {
-        SiftError::Io("fact store unavailable (could not resolve ~/.sift/facts.duckdb)".into())
-    })
-}
 
 /// A single fact expressed as strings, straight from CLI args. The
 /// command layer fills this; parsing / validation happens in

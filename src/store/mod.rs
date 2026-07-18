@@ -174,6 +174,24 @@ pub struct FactRow {
     pub name: Option<String>,
 }
 
+/// One controlled-vocabulary metric definition. `unit_kind` is
+/// whitelist-checked (service side for a friendly message, DuckDB
+/// CHECK as backstop).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetricRow {
+    pub std_key: String,
+    pub label: Option<String>,
+    pub unit_kind: String,
+}
+
+/// One `(source, raw_key) → std_key` mapping row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapRow {
+    pub source: String,
+    pub raw_key: String,
+    pub std_key: String,
+}
+
 /// Identifies one fact row for [`FactStore::delete_fact`].
 #[derive(Debug, Clone)]
 pub struct FactKey {
@@ -227,19 +245,46 @@ impl FactStore {
         Ok(Self { db_path })
     }
 
-    /// Batch UPSERT. One `with_duckdb(Write)`; `created_at` is stamped
-    /// internally with `now_utc()`. `atomic == true` runs the whole
-    /// batch in one transaction and rolls back on the first bad row
-    /// (error carries its 1-based number). `atomic == false` writes
-    /// each row independently, collecting failures into
-    /// [`BatchOutcome::skipped`].
+    /// Batch UPSERT of facts. See [`Self::run_batch`] for the
+    /// atomic / skip-invalid semantics.
     pub fn upsert_facts(&self, rows: &[FactRow], atomic: bool) -> Result<BatchOutcome, SiftError> {
+        self.run_batch(rows, atomic, write_fact)
+    }
+
+    /// Batch UPSERT of controlled-vocabulary metric definitions.
+    pub fn upsert_metrics(
+        &self,
+        rows: &[MetricRow],
+        atomic: bool,
+    ) -> Result<BatchOutcome, SiftError> {
+        self.run_batch(rows, atomic, write_metric)
+    }
+
+    /// Batch UPSERT of `(source, raw_key) → std_key` mappings. The
+    /// `std_key` foreign key to `metrics` is enforced by DuckDB;
+    /// callers should preflight for a friendlier message.
+    pub fn upsert_map(&self, rows: &[MapRow], atomic: bool) -> Result<BatchOutcome, SiftError> {
+        self.run_batch(rows, atomic, write_map)
+    }
+
+    /// Shared batch driver. One `with_duckdb(Write)`; `created_at` is
+    /// stamped internally with `now_utc()` and handed to `write_one`.
+    /// `atomic == true` runs the whole batch in one transaction and
+    /// rolls back on the first bad row (error carries its 1-based
+    /// number). `atomic == false` writes each row independently,
+    /// collecting failures into [`BatchOutcome::skipped`].
+    fn run_batch<T>(
+        &self,
+        rows: &[T],
+        atomic: bool,
+        write_one: impl Fn(&duckdb::Connection, &T, &str) -> Result<(), SiftError>,
+    ) -> Result<BatchOutcome, SiftError> {
         let now = now_stamp();
         with_duckdb(&self.db_path, DuckAccess::Write, |conn| {
             if atomic {
                 let tx = conn.unchecked_transaction().map_err(io)?;
                 for (i, r) in rows.iter().enumerate() {
-                    write_fact(&tx, r, &now)
+                    write_one(&tx, r, &now)
                         .map_err(|e| SiftError::Io(format!("row {}: {e}", i + 1)))?;
                 }
                 tx.commit().map_err(io)?;
@@ -250,13 +295,89 @@ impl FactStore {
             } else {
                 let mut out = BatchOutcome::default();
                 for (i, r) in rows.iter().enumerate() {
-                    match write_fact(conn, r, &now) {
+                    match write_one(conn, r, &now) {
                         Ok(()) => out.written += 1,
                         Err(e) => out.skipped.push((i + 1, format!("{e}"))),
                     }
                 }
                 Ok(out)
             }
+        })
+    }
+
+    /// Every registered `std_key`. Used by the service layer to
+    /// preflight `map set` before relying on the DuckDB foreign key.
+    pub fn metric_keys(&self) -> Result<Vec<String>, SiftError> {
+        let (_c, rows) = self.query("SELECT std_key FROM metrics")?;
+        Ok(rows.into_iter().filter_map(|mut r| r.pop()).collect())
+    }
+
+    /// `(std_key, label, unit_kind)` rows, ordered — TSV round-trips
+    /// back into `metric add`.
+    pub fn list_metrics(&self) -> Result<(Vec<String>, Vec<Vec<String>>), SiftError> {
+        self.query("SELECT std_key, label, unit_kind FROM metrics ORDER BY std_key")
+    }
+
+    /// `(source, raw_key, std_key)` rows, optionally filtered by
+    /// source — TSV round-trips back into `map set`.
+    pub fn list_map(
+        &self,
+        source: Option<&str>,
+    ) -> Result<(Vec<String>, Vec<Vec<String>>), SiftError> {
+        let (cols, mut rows) =
+            self.query("SELECT source, raw_key, std_key FROM key_map ORDER BY source, raw_key")?;
+        if let Some(s) = source {
+            rows.retain(|r| r.first().map(|c| c == s).unwrap_or(false));
+        }
+        Ok((cols, rows))
+    }
+
+    /// Delete a metric. Refuses when `key_map` still references it
+    /// unless `cascade` also removes those mappings.
+    ///
+    /// The mapping delete and the metric delete run in **separate**
+    /// transactions on purpose: DuckDB cannot delete a parent and its
+    /// FK-referencing child in one transaction (the FK index is not
+    /// updated mid-transaction), so the child delete must be committed
+    /// first. Returns the number of `metrics` rows deleted.
+    pub fn delete_metric(&self, std_key: &str, cascade: bool) -> Result<usize, SiftError> {
+        let refs: i64 = with_duckdb(&self.db_path, DuckAccess::Read, |conn| {
+            let mut stmt = conn
+                .prepare("SELECT count(*) FROM key_map WHERE std_key = ?")
+                .map_err(io)?;
+            let mut rows = stmt.query(duckdb::params![std_key]).map_err(io)?;
+            let row = rows
+                .next()
+                .map_err(io)?
+                .ok_or_else(|| SiftError::Io("count returned no row".into()))?;
+            row.get(0).map_err(io)
+        })?;
+        if refs > 0 && !cascade {
+            return Err(SiftError::Parse(format!(
+                "metric {std_key:?} is referenced by {refs} mapping(s); delete them first or use --cascade"
+            )));
+        }
+        if refs > 0 {
+            // Commit the child delete before touching the parent.
+            with_duckdb(&self.db_path, DuckAccess::Write, |conn| {
+                conn.execute("DELETE FROM key_map WHERE std_key = ?", duckdb::params![std_key])
+                    .map_err(io)
+            })?;
+        }
+        with_duckdb(&self.db_path, DuckAccess::Write, |conn| {
+            conn.execute("DELETE FROM metrics WHERE std_key = ?", duckdb::params![std_key])
+                .map_err(io)
+        })
+    }
+
+    /// Delete one `(source, raw_key)` mapping. Returns affected count.
+    pub fn delete_map(&self, source: &str, raw_key: &str) -> Result<usize, SiftError> {
+        with_duckdb(&self.db_path, DuckAccess::Write, |conn| {
+            conn.execute(
+                "DELETE FROM key_map WHERE source = ? AND raw_key = ?",
+                duckdb::params![source, raw_key],
+            )
+            .map_err(io)
         })
     }
 
@@ -344,6 +465,29 @@ fn write_fact(conn: &duckdb::Connection, r: &FactRow, now: &str) -> Result<(), S
             publish,
             now,
         ],
+    )
+    .map_err(io)?;
+    Ok(())
+}
+
+/// Upsert one metric definition. `_now` seeds `created_at` on insert.
+fn write_metric(conn: &duckdb::Connection, r: &MetricRow, now: &str) -> Result<(), SiftError> {
+    conn.execute(
+        "INSERT INTO metrics (std_key, label, unit_kind, created_at) VALUES (?,?,?,?) \
+         ON CONFLICT DO UPDATE SET label = excluded.label, unit_kind = excluded.unit_kind",
+        duckdb::params![r.std_key, r.label, r.unit_kind, now],
+    )
+    .map_err(io)?;
+    Ok(())
+}
+
+/// Upsert one mapping row. `key_map` has no `created_at`, so `now` is
+/// unused here. The `std_key` FK to `metrics` is enforced by DuckDB.
+fn write_map(conn: &duckdb::Connection, r: &MapRow, _now: &str) -> Result<(), SiftError> {
+    conn.execute(
+        "INSERT INTO key_map (source, raw_key, std_key) VALUES (?,?,?) \
+         ON CONFLICT DO UPDATE SET std_key = excluded.std_key",
+        duckdb::params![r.source, r.raw_key, r.std_key],
     )
     .map_err(io)?;
     Ok(())
@@ -639,6 +783,74 @@ mod tests {
             .execute("INSERT INTO facts VALUES ('600519.CN-A',2024,'ytd','na','na','k','manual',1.0,NULL,NULL,now())")
             .unwrap_err();
         let _ = err; // any error is fine — the point is it does not succeed
+    }
+
+    fn metric(std_key: &str, unit_kind: &str) -> MetricRow {
+        MetricRow {
+            std_key: std_key.into(),
+            label: None,
+            unit_kind: unit_kind.into(),
+        }
+    }
+    fn mapping(source: &str, raw_key: &str, std_key: &str) -> MapRow {
+        MapRow {
+            source: source.into(),
+            raw_key: raw_key.into(),
+            std_key: std_key.into(),
+        }
+    }
+
+    #[test]
+    fn metrics_upsert_list_and_bad_unit_kind_rejected() {
+        let (_d, s) = temp_store();
+        s.upsert_metrics(&[metric("revenue", "amount")], true).unwrap();
+        let (cols, rows) = s.list_metrics().unwrap();
+        assert_eq!(cols, vec!["std_key", "label", "unit_kind"]);
+        assert_eq!(rows, vec![vec!["revenue".to_string(), String::new(), "amount".to_string()]]);
+        // CHECK rejects an out-of-whitelist unit_kind.
+        assert!(s.upsert_metrics(&[metric("roe", "percentage")], true).is_err());
+    }
+
+    #[test]
+    fn map_fk_requires_registered_std_key() {
+        let (_d, s) = temp_store();
+        // No metric yet → FK violation.
+        assert!(s
+            .upsert_map(&[mapping("eastmoney", "TOTAL_OPERATE_INCOME", "revenue")], true)
+            .is_err());
+        s.upsert_metrics(&[metric("revenue", "amount")], true).unwrap();
+        s.upsert_map(&[mapping("eastmoney", "TOTAL_OPERATE_INCOME", "revenue")], true)
+            .unwrap();
+        assert_eq!(s.metric_keys().unwrap(), vec!["revenue".to_string()]);
+    }
+
+    #[test]
+    fn delete_metric_refuses_referenced_then_cascades() {
+        let (_d, s) = temp_store();
+        s.upsert_metrics(&[metric("revenue", "amount")], true).unwrap();
+        s.upsert_map(&[mapping("eastmoney", "TOTAL_OPERATE_INCOME", "revenue")], true)
+            .unwrap();
+        // Referenced → refused without cascade.
+        assert!(s.delete_metric("revenue", false).is_err());
+        // Cascade removes the mapping (separate txn) then the metric.
+        assert_eq!(s.delete_metric("revenue", true).unwrap(), 1);
+        assert!(s.metric_keys().unwrap().is_empty());
+        assert!(s.list_map(None).unwrap().1.is_empty());
+    }
+
+    #[test]
+    fn mapped_key_reflects_in_v_facts() {
+        let (_d, s) = temp_store();
+        let mut r = fact("600519.CN-A", "TOTAL_OPERATE_INCOME", 1.0);
+        r.source = "eastmoney".into();
+        s.upsert_facts(&[r], true).unwrap();
+        s.upsert_metrics(&[metric("revenue", "amount")], true).unwrap();
+        s.upsert_map(&[mapping("eastmoney", "TOTAL_OPERATE_INCOME", "revenue")], true)
+            .unwrap();
+        let (_c, rows) = s
+            .query("SELECT key, mapped FROM v_facts WHERE symbol='600519.CN-A'")
+            .unwrap();
+        assert_eq!(rows, vec![vec!["revenue".to_string(), "true".to_string()]]);
     }
 
     #[test]

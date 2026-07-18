@@ -147,6 +147,28 @@ pub enum Command {
         #[command(subcommand)]
         cmd: crate::commands::fact::FactCmd,
     },
+    #[command(
+        about = "Manage the standard-metric vocabulary (add / ls / rm)",
+        after_long_help = "Examples:\n  \
+                           sift metric add revenue --label 营业总收入 --unit-kind amount\n  \
+                           printf '#std_key\\tlabel\\tunit_kind\\nroe\\t加权ROE\\tratio\\n' | sift metric add\n  \
+                           sift metric ls --format tsv"
+    )]
+    Metric {
+        #[command(subcommand)]
+        cmd: crate::commands::metric::MetricCmd,
+    },
+    #[command(
+        about = "Manage raw_key → std_key mappings applied at query time (set / ls / rm)",
+        after_long_help = "Examples:\n  \
+                           sift map set --source eastmoney TOTAL_OPERATE_INCOME revenue\n  \
+                           printf '#source\\traw_key\\tstd_key\\neastmoney\\tWEIGHTAVG_ROE\\troe\\n' | sift map set\n  \
+                           sift map ls --source eastmoney --format tsv"
+    )]
+    Map {
+        #[command(subcommand)]
+        cmd: crate::commands::map::MapCmd,
+    },
 }
 
 #[derive(clap::Args, Debug)]

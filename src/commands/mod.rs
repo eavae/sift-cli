@@ -5,6 +5,8 @@ pub mod announce;
 pub mod bars;
 pub mod extract;
 pub mod fact;
+pub mod map;
+pub mod metric;
 pub mod quote;
 pub mod report;
 pub mod search;

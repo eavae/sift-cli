@@ -22,6 +22,7 @@ pub mod financial_row;
 pub mod market;
 pub mod period;
 pub mod quote;
+pub mod single_quarter;
 pub mod symbol;
 
 pub use symbol::Symbol;

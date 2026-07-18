@@ -45,6 +45,13 @@ pub enum PeriodType {
     H1,
     Q1,
     Q3,
+    /// Single-quarter Apr–Jun. Produced only by the累计→单季 conversion
+    /// (`report --qmode single`); never inferred from a date (it shares
+    /// the 06-30 end with `H1`). See [`crate::domain::single_quarter`].
+    Q2,
+    /// Single-quarter Oct–Dec. Same story as `Q2` (shares 12-31 with
+    /// `Annual`).
+    Q4,
 }
 
 impl PeriodType {
@@ -55,6 +62,8 @@ impl PeriodType {
             Self::H1 => "h1",
             Self::Q1 => "q1",
             Self::Q3 => "q3",
+            Self::Q2 => "q2",
+            Self::Q4 => "q4",
         }
     }
 
@@ -79,6 +88,8 @@ impl FromStr for PeriodType {
             "h1" => Ok(Self::H1),
             "q1" => Ok(Self::Q1),
             "q3" => Ok(Self::Q3),
+            "q2" => Ok(Self::Q2),
+            "q4" => Ok(Self::Q4),
             _ => Err(()),
         }
     }
@@ -132,7 +143,10 @@ impl Period {
             Some(PeriodType::H1) => Self::H1(d.year()),
             Some(PeriodType::Q1) => Self::Q1(d.year()),
             Some(PeriodType::Q3) => Self::Q3(d.year()),
-            None => Self::Custom(d),
+            // `PeriodType::from_date` never yields the single-quarter
+            // Q2/Q4 (06-30→H1, 12-31→Annual); this arm is unreachable
+            // in practice but keeps the match exhaustive.
+            Some(PeriodType::Q2) | Some(PeriodType::Q4) | None => Self::Custom(d),
         }
     }
 

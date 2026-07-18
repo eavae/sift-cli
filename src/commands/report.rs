@@ -4,7 +4,7 @@ use clap::{Args, Subcommand, ValueEnum};
 
 use crate::domain::market::{InstrumentKind, Market};
 use crate::domain::period::last_n_filed;
-use crate::domain::{Period, Query, Scope, SourceTag, Statement, Symbol, Unit};
+use crate::domain::{single_quarter, Period, Query, Scope, SourceTag, Statement, Symbol, Unit};
 use crate::error::SiftError;
 use crate::fetch::report::{
     dispatch_with_cache_named, list_periods_union, load_listing_names, ReportContext,
@@ -123,6 +123,22 @@ pub struct StatementArgs {
     /// upstreams or reproducing bugs.
     #[arg(long, value_enum, default_value_t = SourceArg::Auto)]
     pub source: SourceArg,
+
+    /// Quarter reporting basis. `cumulative` (default) keeps upstream's
+    /// YTD figures (中报=上半年累计 …); `single` converts income /
+    /// cashflow to single-quarter values (Q2=H1−Q1 …) for quarter-over-
+    /// quarter / seasonality analysis. `single` is flow-statement only.
+    #[arg(long, value_enum, default_value_t = QModeArg::Cumulative)]
+    pub qmode: QModeArg,
+}
+
+/// Quarter reporting basis for `--qmode`.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QModeArg {
+    /// Upstream YTD-cumulative figures (unchanged).
+    Cumulative,
+    /// Single-quarter (累计相邻相减); income / cashflow only.
+    Single,
 }
 
 #[derive(Args, Debug)]
@@ -240,24 +256,42 @@ fn run_statement(
     let scope: Scope = args.scope.into();
     let unit: Unit = args.unit.into();
 
+    let qmode = args.qmode;
     validate_scope(scope, &symbols)?;
     validate_not_index(&symbols)?;
     validate_indicator_market(stmt, &symbols)?;
+    validate_qmode(qmode, stmt)?;
+
+    // In single-quarter mode we must fetch every year's four cumulative
+    // periods (the raw material for the diff), regardless of what the
+    // user asked for — `derive` needs the adjacent cumulative.
+    let requested = resolve_periods(&args, stmt)?;
+    let fetch_periods = if qmode == QModeArg::Single {
+        full_year_cumulative(&requested)
+    } else {
+        requested
+    };
 
     let source_name = args.source.as_source_tag().map(SourceTag::as_str);
     let mut all_rows = Vec::new();
     for sym in &symbols {
-        let periods = resolve_periods(&args, stmt)?;
         let query = Query {
             symbol: sym.clone(),
             statement: stmt,
-            periods,
+            periods: fetch_periods.clone(),
             scope,
         };
         let rows = dispatch_with_cache_named(&query, ctx, source_name)?;
-        let rows = financial_render::apply_unit(rows, unit);
         all_rows.extend(rows);
     }
+
+    // 累计 → 单季 conversion runs on raw values, before unit scaling.
+    if qmode == QModeArg::Single {
+        let (singles, missing) = single_quarter::derive(all_rows);
+        warn_missing_single_quarters(&missing);
+        all_rows = singles;
+    }
+    let all_rows = financial_render::apply_unit(all_rows, unit);
 
     // Back-fill the security short name (sina lrb does not return it)
     // from the cninfo listing cache. Empty map if the cache is
@@ -266,12 +300,67 @@ fn run_statement(
     let names = load_listing_names(ctx.app);
 
     let keep = resolve_items(&args.items, stmt);
-    let table = pivot(all_rows, keep.as_deref(), &names);
+    let mut table = pivot(all_rows, keep.as_deref(), &names);
+    table.single_quarter = qmode == QModeArg::Single;
     warn_unmatched_items(keep.as_deref(), &table);
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
     financial_render::render(&mut handle, &table, fmt)?;
     Ok(())
+}
+
+/// Expand a period list to every touched year's four cumulative ends
+/// (Q1/H1/Q3/Annual) — the fetch set single mode derives singles from.
+fn full_year_cumulative(periods: &[Period]) -> Vec<Period> {
+    let mut years: Vec<i32> = periods.iter().map(|p| p.end_date().year()).collect();
+    years.sort_unstable();
+    years.dedup();
+    let mut out = Vec::with_capacity(years.len() * 4);
+    for y in years {
+        out.push(Period::Q1(y));
+        out.push(Period::H1(y));
+        out.push(Period::Q3(y));
+        out.push(Period::Annual(y));
+    }
+    out
+}
+
+/// `--qmode single` only makes sense for the flow statements. Balance
+/// is a point-in-time snapshot; indicator is ratios — neither has a
+/// cumulative→single subtraction.
+fn validate_qmode(qmode: QModeArg, stmt: Statement) -> Result<(), SiftError> {
+    if qmode == QModeArg::Single && !matches!(stmt, Statement::Income | Statement::Cashflow) {
+        return Err(SiftError::NoApplicableSource(format!(
+            "--qmode single 仅适用于 income / cashflow（{} 是时点数 / 比率，无单季口径）",
+            stmt.as_str()
+        )));
+    }
+    Ok(())
+}
+
+/// One `[warn]` summarizing single quarters that couldn't be derived
+/// because an intermediate cumulative period was missing (e.g. the
+/// annual is not yet filed, so Q4 is unavailable).
+fn warn_missing_single_quarters(missing: &[single_quarter::Missing]) {
+    if missing.is_empty() {
+        return;
+    }
+    let preview: Vec<String> = missing
+        .iter()
+        .take(6)
+        .map(|m| format!("{} {}Q{}", m.item, m.year, m.quarter))
+        .collect();
+    let more = if missing.len() > 6 {
+        format!(", +{} more", missing.len() - 6)
+    } else {
+        String::new()
+    };
+    eprintln!(
+        "[warn] {} 个单季因缺中间累计期无法换算（如年报未披露 → Q4）: {}{}",
+        missing.len(),
+        preview.join(", "),
+        more
+    );
 }
 
 /// Print a one-line `[warn]` for each `--items` entry that matched no
@@ -608,7 +697,10 @@ mod tests {
             ],
             sources: vec![],
         };
-        let table = PivotedTable { blocks: vec![block] };
+        let table = PivotedTable {
+            blocks: vec![block],
+            single_quarter: false,
+        };
 
         let filter = vec![
             "TOTAL_OPERATE_INCOME".to_string(), // present
@@ -680,6 +772,44 @@ mod tests {
             kind: InstrumentKind::Equity,
         }];
         validate_indicator_market(Statement::Indicator, &cn).unwrap();
+    }
+
+    #[test]
+    fn validate_qmode_single_flow_only() {
+        // single OK for income / cashflow.
+        validate_qmode(QModeArg::Single, Statement::Income).unwrap();
+        validate_qmode(QModeArg::Single, Statement::Cashflow).unwrap();
+        // rejected for balance (point-in-time) / indicator (ratios).
+        for stmt in [Statement::Balance, Statement::Indicator] {
+            let err = validate_qmode(QModeArg::Single, stmt).unwrap_err();
+            assert!(matches!(err, SiftError::NoApplicableSource(_)));
+            assert!(err.to_string().contains("income / cashflow"), "msg: {err}");
+        }
+        // cumulative is always fine.
+        validate_qmode(QModeArg::Cumulative, Statement::Balance).unwrap();
+    }
+
+    #[test]
+    fn full_year_cumulative_expands_distinct_years_to_four_ends() {
+        // Sub-year + duplicate-year input → each distinct year's 4 ends.
+        let got = full_year_cumulative(&[
+            Period::Q3(2024),
+            Period::Annual(2024),
+            Period::Q1(2023),
+        ]);
+        assert_eq!(
+            got,
+            vec![
+                Period::Q1(2023),
+                Period::H1(2023),
+                Period::Q3(2023),
+                Period::Annual(2023),
+                Period::Q1(2024),
+                Period::H1(2024),
+                Period::Q3(2024),
+                Period::Annual(2024),
+            ]
+        );
     }
 
     #[test]

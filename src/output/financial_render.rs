@@ -55,6 +55,10 @@ pub struct SymbolBlock {
 #[derive(Debug, Clone, Default)]
 pub struct PivotedTable {
     pub blocks: Vec<SymbolBlock>,
+    /// When true the period columns are single-quarter values and are
+    /// labeled `{year}Q{n}` instead of the raw quarter-end date (a
+    /// single Q2 shares 06-30 with H1, so the date would mislead).
+    pub single_quarter: bool,
 }
 
 /// Pivot a long-form row list into per-symbol blocks.
@@ -159,7 +163,10 @@ pub fn pivot(
             sources,
         });
     }
-    PivotedTable { blocks }
+    PivotedTable {
+        blocks,
+        single_quarter: false,
+    }
 }
 
 /// Internal accumulator used by [`pivot`].
@@ -233,7 +240,7 @@ fn render_table<W: Write>(out: &mut W, table: &PivotedTable) -> Result<(), SiftE
         // header names the statement (利润表 / 资产负债表 / …).
         let mut headers: Vec<String> = vec![block.statement.cn_label().to_string()];
         for p in &block.periods {
-            headers.push(format_date(*p));
+            headers.push(period_label(*p, table.single_quarter));
         }
         let mut rows: Vec<Vec<String>> = Vec::with_capacity(block.items.len());
         for (item, vals) in &block.items {
@@ -320,7 +327,7 @@ impl<'a> TabularView for FinancialsTsvView<'a> {
                 let mut row: Vec<String> = Vec::with_capacity(CONTEXT_COLS.len() + self.item_cols.len());
                 row.push(format_secucode(&block.symbol));
                 row.push(block.name.clone());
-                row.push(format_date(*period));
+                row.push(period_label(*period, self.table.single_quarter));
                 row.push(block.sources.get(pi).cloned().unwrap_or_default());
                 row.push(block.scope.clone());
                 row.push(block.currency.clone());
@@ -346,7 +353,7 @@ fn render_ndjson<W: Write>(out: &mut W, table: &PivotedTable) -> Result<(), Sift
             let mut obj = serde_json::Map::new();
             obj.insert("_symbol".into(), json!(format_secucode(&block.symbol)));
             obj.insert("_name".into(), json!(block.name));
-            obj.insert("_period".into(), json!(format_date(*p)));
+            obj.insert("_period".into(), json!(period_label(*p, table.single_quarter)));
             obj.insert("_scope".into(), json!(block.scope));
             obj.insert("_currency".into(), json!(block.currency));
             obj.insert("_unit".into(), json!(block.unit.as_str()));
@@ -434,6 +441,17 @@ fn format_secucode(sym: &Symbol) -> String {
 fn format_date(d: time::Date) -> String {
     d.format(&time::format_description::well_known::Iso8601::DATE)
         .unwrap_or_default()
+}
+
+/// Column label for a period. Cumulative mode uses the ISO date;
+/// single-quarter mode uses `{year}Q{n}` (n derived from the
+/// quarter-end month) so a single Q2 reads `2024Q2`, not `2024-06-30`.
+fn period_label(d: time::Date, single_quarter: bool) -> String {
+    if single_quarter {
+        format!("{}Q{}", d.year(), (d.month() as u8) / 3)
+    } else {
+        format_date(d)
+    }
 }
 
 /// Format a numeric cell for table / TSV output.
@@ -952,6 +970,49 @@ mod tests {
             let header = s.lines().nth(2).unwrap();
             assert!(header.starts_with(want), "{stmt:?}: header was {header:?}");
         }
+    }
+
+    #[test]
+    fn single_quarter_mode_labels_columns_as_year_qn() {
+        // A 06-30 period in single mode must read `2024Q2`, not the
+        // date (which would collide with H1). Cumulative mode keeps
+        // the date.
+        let r = row(
+            "600519",
+            Market::CnA,
+            "茅台",
+            "营业总收入",
+            100.0,
+            d(2024, 6, 30),
+            SourceTag::EastMoney,
+        );
+        let mut t = pivot(vec![r], None, &empty_lookup());
+        t.single_quarter = true;
+        for fmt in [Format::Table, Format::Tsv, Format::Json] {
+            let mut buf = Vec::<u8>::new();
+            render(&mut buf, &t, fmt).unwrap();
+            let s = String::from_utf8(buf).unwrap();
+            assert!(s.contains("2024Q2"), "{fmt:?} output lacked 2024Q2:\n{s}");
+            assert!(!s.contains("2024-06-30"), "{fmt:?} leaked date:\n{s}");
+        }
+    }
+
+    #[test]
+    fn cumulative_mode_keeps_date_column_labels() {
+        let r = row(
+            "600519",
+            Market::CnA,
+            "茅台",
+            "营业总收入",
+            100.0,
+            d(2024, 6, 30),
+            SourceTag::EastMoney,
+        );
+        let t = pivot(vec![r], None, &empty_lookup()); // single_quarter defaults false
+        let mut buf = Vec::<u8>::new();
+        render(&mut buf, &t, Format::Tsv).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("2024-06-30"), "cumulative should show date:\n{s}");
     }
 
     #[test]

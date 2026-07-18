@@ -1,4 +1,4 @@
-//! Renderer for `sift sql` / `sift _sql` result sets — a
+//! Renderer for `sift sql` (and `--write`) result sets — a
 //! runtime-resolved `(columns, rows-of-strings)` shape (unlike the
 //! static-schema `RenderRow` path). TSV routes through the canonical
 //! [`render_tabular`] emitter; table and JSON are handled here because

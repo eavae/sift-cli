@@ -50,8 +50,7 @@ fn main() {
         Command::Extract(args) => run_extract(args, fmt),
         Command::Quote(args) => run_quote(args, fmt),
         Command::Bars(args) => run_bars(args, fmt),
-        Command::Sql(args) => run_sql(args, fmt, false),
-        Command::SqlWrite(args) => run_sql(args, fmt, true),
+        Command::Sql(args) => run_sql(args, fmt),
         Command::Fact { cmd } => run_fact(cmd, fmt),
         Command::Metric { cmd } => run_metric(cmd, fmt),
         Command::Map { cmd } => run_map(cmd, fmt),
@@ -247,20 +246,15 @@ fn run_bars(
     commands::bars::run(args, &ctx, fmt)
 }
 
-/// Build the AppContext for `sift sql` / `sift _sql` and dispatch.
-/// Only the fact store is needed — no HTTP caches. `write == true`
-/// routes to the `_sql` writable escape hatch.
+/// Build the AppContext for `sift sql` and dispatch. Only the fact
+/// store is needed — no HTTP caches. The read-only / `--write` split
+/// is handled inside the command from `SqlArgs::write`.
 fn run_sql(
     args: crate::commands::sql::SqlArgs,
     fmt: output::Format,
-    write: bool,
 ) -> Result<(), SiftError> {
     let ctx = build_app_context(false, true);
-    if write {
-        commands::sql::run_write(args, &ctx, fmt)
-    } else {
-        commands::sql::run(args, &ctx, fmt)
-    }
+    commands::sql::run(args, &ctx, fmt)
 }
 
 /// Build the AppContext for `sift fact {set,rm}` and dispatch. Only

@@ -119,23 +119,17 @@ pub enum Command {
     )]
     Bars(crate::commands::bars::BarsArgs),
     #[command(
-        about = "Run a read-only SQL query against the local fact store (~/.sift/facts.duckdb)",
-        after_long_help = "Examples:\n  \
+        about = "Query the local fact store (~/.sift/facts.duckdb); read-only unless --write",
+        after_long_help = "Read-only by default. Examples:\n  \
                            sift sql \"SELECT symbol,value FROM v_facts WHERE key='roe' AND period='2024A' ORDER BY value DESC LIMIT 20\"\n  \
                            sift sql \"SELECT period_end,value FROM v_facts WHERE symbol='600519.CN-A' AND raw_key='TOTAL_OPERATE_INCOME' ORDER BY period_end\"\n\n\
-                           Writes are rejected — use `sift _sql` for the writable escape hatch."
+                           --write is the escape hatch: run ANY statement (INSERT/UPDATE/DELETE/DDL). \
+                           CHECK / foreign-key / NOT NULL are still enforced, so it can delete and fix \
+                           but not insert invalid data; DDL (DROP/ALTER) is unrestricted. Dangerous:\n  \
+                           sift sql --write \"DELETE FROM facts WHERE source='screen' AND fiscal_year<2015\"\n  \
+                           sift sql --write \"UPDATE facts SET currency='CNY' WHERE currency IS NULL\""
     )]
     Sql(crate::commands::sql::SqlArgs),
-    #[command(
-        name = "_sql",
-        about = "Escape hatch: run ANY SQL (INSERT/UPDATE/DELETE/DDL) against the fact store — dangerous",
-        after_long_help = "The underscore marks this as non-routine. CHECK / foreign-key / NOT NULL \
-                           constraints are still enforced by DuckDB, so this can delete and fix rows \
-                           but cannot insert invalid data; DDL (DROP/ALTER) is unrestricted.\n\nExamples:\n  \
-                           sift _sql \"DELETE FROM facts WHERE source='screen' AND fiscal_year<2015\"\n  \
-                           sift _sql \"UPDATE facts SET currency='CNY' WHERE currency IS NULL\""
-    )]
-    SqlWrite(crate::commands::sql::SqlArgs),
     #[command(
         about = "Write facts into the local store: one via flags, or a #header TSV batch on stdin",
         after_long_help = "Examples:\n  \

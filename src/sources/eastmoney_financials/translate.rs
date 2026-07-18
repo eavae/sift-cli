@@ -8,7 +8,7 @@ use time::{Date, Month};
 
 use crate::domain::market::{infer_board, Board, Market};
 use crate::domain::{
-    items_dict, AuditStatus, FinancialRow, PeriodType, Query, SourceTag, Symbol, Unit,
+    AuditStatus, FinancialRow, PeriodType, Query, SourceTag, Symbol, Unit,
 };
 
 /// Build the EM A-share `code` parameter: `{SH|SZ|BJ}{code}`.
@@ -169,7 +169,7 @@ pub fn a_wide_to_rows(entry: &Map<String, Value>, q: &Query) -> Vec<FinancialRow
             period_type,
             statement: q.statement,
             scope: q.scope,
-            item: items_dict::dict().normalize(key),
+            item: key.clone(),
             value: num,
             unit: Unit::Raw,
             currency: currency.clone(),
@@ -303,24 +303,21 @@ mod tests {
         let row_by_item: std::collections::HashMap<String, &FinancialRow> =
             rows.iter().map(|r| (r.item.clone(), r)).collect();
 
-        // Hits dict.
-        assert!(row_by_item.contains_key("营业总收入"));
-        assert_eq!(row_by_item["营业总收入"].value, 172054171891.0);
-        assert_eq!(row_by_item["营业总收入"].currency, "CNY");
-        assert_eq!(row_by_item["营业总收入"].name, "贵州茅台");
-        assert_eq!(row_by_item["营业总收入"].period.year(), 2025);
-        assert_eq!(row_by_item["营业总收入"].period_type, PeriodType::Annual);
+        // Item labels are the raw EM column codes — no dictionary pass.
+        assert!(row_by_item.contains_key("TOTAL_OPERATE_INCOME"));
+        assert_eq!(row_by_item["TOTAL_OPERATE_INCOME"].value, 172054171891.0);
+        assert_eq!(row_by_item["TOTAL_OPERATE_INCOME"].currency, "CNY");
+        assert_eq!(row_by_item["TOTAL_OPERATE_INCOME"].name, "贵州茅台");
+        assert_eq!(row_by_item["TOTAL_OPERATE_INCOME"].period.year(), 2025);
+        assert_eq!(row_by_item["TOTAL_OPERATE_INCOME"].period_type, PeriodType::Annual);
 
-        assert!(row_by_item.contains_key("归母净利润"));
-        assert!(row_by_item.contains_key("基本每股收益"));
-        assert!(row_by_item.contains_key("营业成本"));
+        assert!(row_by_item.contains_key("PARENT_NETPROFIT"));
+        assert!(row_by_item.contains_key("BASIC_EPS"));
+        assert!(row_by_item.contains_key("OPERATE_COST"));
     }
 
     #[test]
-    fn a_wide_to_rows_keeps_unknown_columns_verbatim_and_records_them() {
-        // Clear any residual state so this test can assert exactly.
-        let _ = items_dict::drain_unmapped();
-
+    fn a_wide_to_rows_keeps_columns_verbatim() {
         let raw = serde_json::json!({
             "REPORT_DATE": "2025-12-31",
             "REPORT_TYPE": "年报",
@@ -329,14 +326,8 @@ mod tests {
         });
         let rows = a_wide_to_rows(raw.as_object().unwrap(), &cn_a_query());
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].item, "MOCK_COL_XYZ"); // passthrough on miss
+        assert_eq!(rows[0].item, "MOCK_COL_XYZ"); // raw EM column code
         assert_eq!(rows[0].value, 42.0);
-
-        let drained = items_dict::drain_unmapped();
-        assert!(
-            drained.contains(&"MOCK_COL_XYZ".to_string()),
-            "drained: {drained:?}"
-        );
     }
 
     #[test]

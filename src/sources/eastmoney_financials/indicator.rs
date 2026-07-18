@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use time::Date;
 
 use crate::domain::{
-    items_dict, AuditStatus, FinancialRow, Period, PeriodType, Query, SourceTag, Symbol, Unit,
+    AuditStatus, FinancialRow, Period, PeriodType, Query, SourceTag, Symbol, Unit,
 };
 use crate::error::SiftError;
 use crate::http::HttpClient;
@@ -119,7 +119,7 @@ fn wide_to_indicator_rows(
             period_type,
             statement: q.statement,
             scope: q.scope,
-            item: items_dict::dict().normalize(key),
+            item: key.clone(),
             value: num,
             unit: Unit::Raw,
             currency: currency.clone(),
@@ -201,11 +201,11 @@ mod tests {
             assert_eq!(r.period_type, PeriodType::Annual);
         }
         let items: Vec<&str> = rows.iter().map(|r| r.item.as_str()).collect();
-        // EM column names normalize to standardized Chinese names.
-        assert!(items.contains(&"ROE"), "items: {items:?}");
-        assert!(items.contains(&"ROA"), "items: {items:?}");
-        assert!(items.contains(&"毛利率"), "items: {items:?}");
-        assert!(items.contains(&"资产负债率"), "items: {items:?}");
+        // Raw EM indicator column codes — no dictionary normalization.
+        assert!(items.contains(&"ROE_AVG"), "items: {items:?}");
+        assert!(items.contains(&"ROA_AVG"), "items: {items:?}");
+        assert!(items.contains(&"GROSS_PROFIT_RATIO"), "items: {items:?}");
+        assert!(items.contains(&"DEBT_ASSET_RATIO"), "items: {items:?}");
     }
 
     #[test]

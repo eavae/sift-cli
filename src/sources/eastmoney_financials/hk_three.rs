@@ -15,8 +15,7 @@ use std::collections::HashMap;
 use time::Date;
 
 use crate::domain::{
-    items_dict, AuditStatus, FinancialRow, Period, PeriodType, Query, Scope, SourceTag, Statement,
-    Symbol, Unit,
+    AuditStatus, FinancialRow, Period, PeriodType, Query, Scope, SourceTag, Statement, Symbol, Unit,
 };
 use crate::error::SiftError;
 use crate::http::HttpClient;
@@ -113,7 +112,7 @@ pub(crate) fn fetch(
             period_type,
             statement: q.statement,
             scope: Scope::Consolidated,
-            item: items_dict::dict().normalize(item_label),
+            item: item_label.to_string(),
             value,
             unit: Unit::Raw,
             currency,

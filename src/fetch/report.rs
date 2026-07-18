@@ -27,8 +27,7 @@ use crate::cache::record::{Kind as CacheKind, RecordCache};
 use crate::cache::ttl;
 use crate::domain::market::Market;
 use crate::domain::{
-    items_dict, AuditStatus, FinancialRow, Period, PeriodType, Query, Scope, SourceTag, Statement,
-    Symbol, Unit,
+    AuditStatus, FinancialRow, Period, PeriodType, Query, Scope, SourceTag, Statement, Symbol, Unit,
 };
 use crate::error::SiftError;
 use crate::sources::financial_source::FinancialSource;
@@ -57,7 +56,18 @@ pub fn dispatch_with_cache(
     query: &Query,
     ctx: &ReportContext,
 ) -> Result<Vec<FinancialRow>, SiftError> {
-    let refs: Vec<&dyn FinancialSource> = ctx.sources.iter().map(|b| b.as_ref()).collect();
+    // The auto race only includes sources that opt in via
+    // `auto_dispatch()`. sina opts out — its A-share item labels are
+    // Chinese while EM's are the raw English column codes, so letting
+    // both win nondeterministically would flip the field names run to
+    // run. sina stays reachable through `--source sina`
+    // (`dispatch_with_cache_named`), which ignores this filter.
+    let refs: Vec<&dyn FinancialSource> = ctx
+        .sources
+        .iter()
+        .filter(|b| b.auto_dispatch())
+        .map(|b| b.as_ref())
+        .collect();
     dispatch_inner(query, ctx.app, &refs)
 }
 
@@ -226,10 +236,12 @@ pub fn list_periods_union(
     let mut any_called = false;
     let mut union: BTreeSet<(Date, PeriodType, String)> = BTreeSet::new();
     for src in ctx.sources {
-        if let Some(want) = pinned {
-            if src.name() != want {
-                continue;
-            }
+        match pinned {
+            Some(want) if src.name() != want => continue,
+            // Unpinned: honor the same auto-dispatch opt-out as the
+            // statement race so `periods` reflects the default sources.
+            None if !src.auto_dispatch() => continue,
+            _ => {}
         }
         let probe = Query {
             symbol: symbol.clone(),
@@ -401,21 +413,9 @@ fn financials_cache_get(
         return None;
     }
     let stored: Vec<StoredFinancialRow> = serde_json::from_slice(&entry.body).ok()?;
-    // Re-normalize `item` against the current dictionary. Rows written
-    // before a dict extension may carry the raw upstream label; this
-    // O(1) lookup lets dict updates apply to already-cached rows
-    // without waiting for TTL expiry.
-    let dict = items_dict::dict();
-    Some(
-        stored
-            .into_iter()
-            .map(|sr| {
-                let mut row = sr.into_row();
-                row.item = dict.normalize(&row.item);
-                row
-            })
-            .collect(),
-    )
+    // Item labels are stored (and returned) verbatim — no dictionary
+    // pass. The label a row was written with is the raw upstream label.
+    Some(stored.into_iter().map(StoredFinancialRow::into_row).collect())
 }
 
 /// Upsert one fetch's rows into the cache. Groups the input by period
@@ -1045,16 +1045,13 @@ mod tests {
     }
 
     #[test]
-    fn financials_cache_renormalizes_item_through_dict_on_read() {
-        // Pre-write a body that uses a sina-style synonym; expect
-        // `get` to return it as the dict's canonical CN form. The dict
-        // ships with `减:营业成本 → 营业成本` and similar; pick one
-        // whose mapping is well-defined.
+    fn financials_cache_preserves_item_label_verbatim_on_read() {
+        // Items round-trip through the cache unchanged — there is no
+        // dictionary pass, so whatever raw upstream label was written
+        // comes back exactly.
         let tmp = TempDir::new().unwrap();
         let cache = financials_cache(&tmp);
         let period = date(2025, 12, 31);
-        // The dict normalizes the English EM column too. Use that as the
-        // injected raw value so we don't depend on a specific CN synonym.
         let row = fc_row(period, "OPERATE_INCOME", 100.0, SourceTag::EastMoney);
         financials_cache_put(&cache, std::slice::from_ref(&row), SourceTag::EastMoney, "eastmoney");
         let got = financials_cache_get(
@@ -1067,11 +1064,8 @@ mod tests {
             date(2026, 5, 20),
         )
         .unwrap();
-        // The returned item is whatever the dict normalizes
-        // `OPERATE_INCOME` to. If the dict doesn't know it, normalize
-        // passes through verbatim — assert one of those two outcomes.
-        let dict = items_dict::dict();
-        let expected = dict.normalize("OPERATE_INCOME");
-        assert_eq!(got[0].item, expected);
+        // Items round-trip through the cache verbatim — no dictionary
+        // pass on read, so the raw upstream label is preserved.
+        assert_eq!(got[0].item, "OPERATE_INCOME");
     }
 }

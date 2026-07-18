@@ -16,13 +16,11 @@
 //!   currently returns an empty `Vec`. Story 05's smoke phase will
 //!   decide whether to flesh out US live or keep it fixture-only.
 //!
-//! Field-name normalization runs through
-//! [`crate::domain::items_dict::dict`] in every adapter — upstream
-//! English columns (`TOTAL_OPERATE_INCOME`) and Chinese long-table
-//! labels (`营业总收入`) both resolve to the same standardized item
-//! name. Unknown columns pass through verbatim **and** get recorded
-//! for the end-of-run hint via
-//! [`crate::domain::items_dict::record_unmapped`].
+//! Item labels are emitted **verbatim** — there is no name
+//! dictionary. A-share adapters surface EM's raw English column codes
+//! (`TOTAL_OPERATE_INCOME`); the HK long-table adapter surfaces the
+//! `STD_ITEM_NAME` Chinese labels (`营业总收入`) as-is. `--items`
+//! filters against those raw labels.
 
 pub mod a_three;
 pub mod hk_three;

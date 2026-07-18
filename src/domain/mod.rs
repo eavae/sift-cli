@@ -8,14 +8,17 @@
 //!   / `SourceTag` are the long-format domain types financials sources
 //!   produce.
 //! - `Query` is the input to the financial-source dispatch layer.
-//! - `items_dict` ships the upstream-label → standardized-Chinese
-//!   dictionary plus the unmapped-label collector.
+//!
+//! Item labels are passed through **verbatim** from each upstream —
+//! there is no name-normalization dictionary. A-share EM statements
+//! therefore surface EM's raw English column codes
+//! (`TOTAL_OPERATE_INCOME`), while HK / sina surface their native
+//! Chinese labels. `--items` filters against those raw labels.
 
 pub mod announcement;
 pub mod bars;
 pub mod financial_query;
 pub mod financial_row;
-pub mod items_dict;
 pub mod market;
 pub mod period;
 pub mod quote;

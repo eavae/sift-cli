@@ -11,11 +11,11 @@ use time::Date;
 use crate::domain::period::PeriodType;
 use crate::domain::Symbol;
 
-/// One normalized fact: a single line item for one symbol, one report
-/// period. `item` is the standardized Chinese name if the dictionary
-/// resolves it; otherwise the upstream raw label (in which case the
-/// raw label is also reported through the unmapped collector — see
-/// [`crate::domain::items_dict::record_unmapped`]).
+/// One fact: a single line item for one symbol, one report period.
+/// `item` is the **raw upstream label** — there is no name dictionary,
+/// so A-share EM rows carry EM's English column code
+/// (`TOTAL_OPERATE_INCOME`) and HK / sina rows carry their native
+/// Chinese labels.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FinancialRow {
     pub symbol: Symbol,

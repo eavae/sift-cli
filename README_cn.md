@@ -23,7 +23,7 @@
 | **📊 三套财报源 + 一次成功即返回** | 东方财富 + 新浪 + （未来）巨潮多源并发竞速，谁先返回用谁；附带 `--source` 显式钉源，便于复现。 |
 | **🗂 公告全流程** | `announce list` 浏览 / `show` 详情 / `download` 下载 PDF / `extract` 把 PDF 转 Markdown（含 OCR 升级，扫描件也能读）。 |
 | **📈 K 线 + 行情** | `quote` 拿当前价快照，`bars` 拿日 / 周 / 月线，前复权 / 不复权 / 后复权可选。 |
-| **🧠 中文项名归一化** | `data/items.txt` 内置一个标准中文名 ↔ 同义词 ↔ 东财英文列名的字典，财报输出统一为中文标准项，方便 LLM 直接读懂。 |
+| **🏷 原样保留科目名** | 财报科目名直接沿用上游原始字段，不做易失真的映射。A 股（东方财富）用东财英文列名（`TOTAL_OPERATE_INCOME`），港股 / sina 用各自的中文科目名；`--items` 按这些原始名精确过滤。 |
 | **💾 本地缓存** | 上市列表（24h 文件缓存）、财报（DuckDB + 三档 TTL，越新越短）、公告元数据（DuckDB，无 TTL）、PDF（永久文件缓存）。单只股票二次查询毫秒级返回。 |
 | **🔒 离线优先 / 失败优雅降级** | `$HOME` 不可达 → 关掉缓存继续跑；某只股票失败 → stderr 打 `[warn]` 但其他股票照常输出；从不整体崩溃。 |
 | **🚀 单二进制 / 无运行时** | DuckDB 静态链接，无需 Python / Node / 系统库；一份 `~/.local/bin/sift` 即可。 |
@@ -118,6 +118,8 @@ sift bars  <code...> [--period daily|weekly|monthly] [--limit N] [--adjust pre|n
 
 每条命令都支持 `--format tsv|json`（默认人类对齐表格）。多 symbol 时单只失败不影响其他。
 
+Symbol 写法：裸 6 位数字 = A 股（`600519`），裸 5 位 = 港股（`00700`），也接受 `600519.SH` / `00700.HK` 后缀和 `sh600519` 前缀。**指数**必须带交易所前缀，且仅 `quote` / `bars` 支持：`sh000001` = 上证指数、`sz399001` = 深证成指（输出保留小写前缀形式；`report` / `announce` 会拒绝指数）。注意裸 `000001` 永远是平安银行，不是上证指数。
+
 ## 环境变量
 
 ### 1. PaddleOCR（`sift extract --mode fine|auto` 必需）
@@ -191,7 +193,7 @@ export SIFT_BAIDU_HOST="https://aip.baidubce.com"
 ## 项目状态
 
 - ✅ **F1 search** — 模糊搜索 4 / 4
-- ✅ **F2 report** — 财报 5 / 5（+ 转置布局 / `--source` 钉源 / 词典热更新）
+- ✅ **F2 report** — 财报 5 / 5（+ 转置布局 / `--source` 钉源 / 原样保留科目名）
 - ✅ **F3 announce** — list / show / download / types 全部完成
 - ✅ **F4 extract** — fast / fine / auto 三种模式
 - ✅ **F5 realtime** — quote / bars 完成

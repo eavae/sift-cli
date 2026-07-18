@@ -12,9 +12,10 @@
 //! - board ≠ `BjMain` — sina lists SH + SZ + B-share but not Beijing
 //!
 //! Everything else returns `false` from `supports`, so the
-//! dispatcher skips sina entirely for those queries. Item names are
-//! normalized via the dictionary in
-//! [`crate::domain::items_dict::dict`], same as the EM source.
+//! dispatcher skips sina entirely for those queries. sina also opts
+//! out of the automatic race (`auto_dispatch() == false`) — it is
+//! reachable only via `--source sina`. Item names (sina's native
+//! Chinese `item_title`s) are emitted verbatim; there is no dictionary.
 
 use std::collections::{HashMap, HashSet};
 
@@ -23,7 +24,7 @@ use time::{Date, Month};
 
 use crate::domain::market::{infer_board, Board, Market};
 use crate::domain::{
-    items_dict, AuditStatus, FinancialRow, Period, PeriodType, Query, Scope, SourceTag, Statement,
+    AuditStatus, FinancialRow, Period, PeriodType, Query, Scope, SourceTag, Statement,
     Symbol, Unit,
 };
 use crate::error::SiftError;
@@ -63,6 +64,14 @@ impl Default for SinaFinancialSource {
 impl FinancialSource for SinaFinancialSource {
     fn name(&self) -> &'static str {
         "sina"
+    }
+
+    /// Opt out of the automatic race — sina is reachable only via
+    /// `--source sina`. Its Chinese item labels would otherwise
+    /// compete nondeterministically with EM's raw English column
+    /// codes. See [`FinancialSource::auto_dispatch`].
+    fn auto_dispatch(&self) -> bool {
+        false
     }
 
     fn supports(&self, q: &Query) -> bool {
@@ -255,7 +264,7 @@ fn parse_rows(raw: SinaResp, q: &Query) -> Result<Vec<FinancialRow>, SiftError> 
                 period_type,
                 statement: q.statement,
                 scope: Scope::Consolidated,
-                item: items_dict::dict().normalize(&it.item_title),
+                item: it.item_title.clone(),
                 value: v,
                 unit: Unit::Raw,
                 currency: currency.clone(),
@@ -296,7 +305,7 @@ fn audit_from_str(s: &str) -> AuditStatus {
 mod tests {
     use super::*;
     use crate::app::AppContext;
-    use crate::fetch::report::{dispatch_with_cache, ReportContext};
+    use crate::fetch::report::{dispatch_with_cache, dispatch_with_cache_named, ReportContext};
     use crate::sources::eastmoney_financials::EastmoneyFinancialSource;
     use crate::sources::financial_source::FinancialSource;
 
@@ -507,10 +516,9 @@ mod tests {
         assert_eq!(by_item["营业总收入"].value, 172054171890.91);
         assert_eq!(by_item["营业总收入"].currency, "CNY");
         assert_eq!(by_item["营业总收入"].audit, AuditStatus::Audited);
-        // 减:营业成本 normalizes to 营业成本 via the dict.
-        assert_eq!(by_item["营业成本"].value, 14892277571.0);
-        // sina-style 归属于母公司股东的净利润 → 归母净利润.
-        assert_eq!(by_item["归母净利润"].value, 82320067102.0);
+        // sina's native labels pass through verbatim (no dictionary).
+        assert_eq!(by_item["减:营业成本"].value, 14892277571.0);
+        assert_eq!(by_item["归属于母公司股东的净利润"].value, 82320067102.0);
         // Sentinel survives passthrough.
         assert!(by_item.contains_key("SIFT_SINA_TEST_SENTINEL"));
 
@@ -632,19 +640,20 @@ mod tests {
     }
 
     #[test]
-    fn unmapped_item_titles_pass_through_to_unmapped_collector() {
-        let _ = items_dict::drain_unmapped();
+    fn item_titles_pass_through_verbatim() {
         let mut server = make_server();
         let _m = mock_sina(&mut server, &sina_lrb_body());
         let src = SinaFinancialSource::with_url(server.url());
 
-        let _ = src
+        let rows = src
             .fetch(&income_query(cn_a("600519"), vec![]), &HttpClient::new())
             .unwrap();
-        let drained = items_dict::drain_unmapped();
+        // No dictionary: sina's native Chinese titles surface unchanged,
+        // including labels sift has never seen before.
         assert!(
-            drained.contains(&"SIFT_SINA_TEST_SENTINEL".to_string()),
-            "drained: {drained:?}"
+            rows.iter().any(|r| r.item == "SIFT_SINA_TEST_SENTINEL"),
+            "items: {:?}",
+            rows.iter().map(|r| &r.item).collect::<Vec<_>>()
         );
     }
 
@@ -675,16 +684,10 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_falls_back_to_sina_when_em_fails() {
+    fn pinned_source_sina_answers_and_reports_its_flag() {
+        // sina is opt-in: it no longer joins the automatic race, but
+        // `--source sina` (a pinned dispatch) still reaches it.
         let mut server = make_server();
-        // EM step 1 returns 404 (not retried) → immediate Err for EM.
-        let _em_fail = server
-            .mock("GET", "/lrbDateAjaxNew")
-            .match_query(mockito::Matcher::Any)
-            .with_status(404)
-            .with_body("not found")
-            .expect_at_least(1)
-            .create();
         // sina succeeds.
         let _sina_ok = server
             .mock("GET", "/")
@@ -704,7 +707,7 @@ mod tests {
         let ctx = ReportContext { app: &app, sources: &srcs };
 
         let q = income_query(cn_a("600519"), vec![Period::Annual(2025)]);
-        let rows = dispatch_with_cache(&q, &ctx).unwrap();
+        let rows = dispatch_with_cache_named(&q, &ctx, Some("sina")).unwrap();
 
         assert!(!rows.is_empty(), "expected sina rows");
         assert_eq!(rows[0].source, SourceTag::Sina);
@@ -712,12 +715,11 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_uses_sina_when_em_does_not_support_query() {
-        // Sina supports CnA + Consolidated; EM does too. To exercise
-        // sina alone we put both into the registry but pick a query
-        // where only sina would respond meaningfully — here we just
-        // verify the source flag in the result without forcing a race.
-        // (`Story 02` already tests timing-based first-success.)
+    fn auto_dispatch_excludes_sina_so_em_failure_is_not_masked() {
+        // With sina opted out of the auto race, an EM failure surfaces
+        // as AllSourcesFailed rather than being silently papered over by
+        // sina (which would have flipped item labels to Chinese). sina
+        // remains reachable via the pinned path.
         let mut server = make_server();
         let _em_fail = server
             .mock("GET", "/lrbDateAjaxNew")
@@ -738,7 +740,13 @@ mod tests {
         let srcs: Vec<Box<dyn FinancialSource>> = vec![Box::new(em), Box::new(sina)];
         let ctx = ReportContext { app: &app, sources: &srcs };
         let q = income_query(cn_a("600519"), vec![Period::Annual(2025)]);
-        let rows = dispatch_with_cache(&q, &ctx).unwrap();
+
+        // Auto path: sina is not raced → EM's 404 is the only outcome.
+        let err = dispatch_with_cache(&q, &ctx).unwrap_err();
+        assert!(matches!(err, SiftError::AllSourcesFailed(_)), "got {err:?}");
+
+        // Pinned path: sina still answers.
+        let rows = dispatch_with_cache_named(&q, &ctx, Some("sina")).unwrap();
         assert_eq!(rows[0].source, SourceTag::Sina);
     }
 

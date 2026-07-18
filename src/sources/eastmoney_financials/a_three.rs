@@ -186,7 +186,6 @@ struct WideResp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::items_dict;
     use crate::domain::market::Market;
     use crate::domain::{Period, PeriodType, SourceTag};
     use crate::sources::financial_source::FinancialSource;
@@ -309,11 +308,11 @@ mod tests {
             assert_eq!(r.source, SourceTag::EastMoney);
             assert_eq!(r.scope, Scope::Consolidated);
         }
-        // Spot-check translated item names.
+        // Item labels are the raw EM column codes (no dictionary).
         let items: Vec<&str> = rows.iter().map(|r| r.item.as_str()).collect();
-        assert!(items.contains(&"营业总收入"), "items: {items:?}");
-        assert!(items.contains(&"归母净利润"), "items: {items:?}");
-        assert!(items.contains(&"基本每股收益"), "items: {items:?}");
+        assert!(items.contains(&"TOTAL_OPERATE_INCOME"), "items: {items:?}");
+        assert!(items.contains(&"PARENT_NETPROFIT"), "items: {items:?}");
+        assert!(items.contains(&"BASIC_EPS"), "items: {items:?}");
 
         m_wide.assert();
     }
@@ -658,9 +657,9 @@ mod tests {
     }
 
     #[test]
-    fn unknown_columns_pass_through_and_register_in_unmapped() {
-        // Use a unique sentinel so the global UNMAPPED set test is robust.
-        let _ = items_dict::drain_unmapped();
+    fn every_numeric_column_passes_through_verbatim() {
+        // No dictionary: every non-metadata numeric column becomes a
+        // row whose `item` is the raw EM column code.
         let body = r#"{"data":[{
             "REPORT_DATE":"2025-12-31",
             "REPORT_TYPE":"年报",
@@ -695,11 +694,11 @@ mod tests {
             .find(|r| r.item == "SIFT_A_THREE_TEST_SENTINEL")
             .expect("unknown column should pass through");
         assert_eq!(sentinel.value, 42.0);
-
-        let drained = items_dict::drain_unmapped();
-        assert!(
-            drained.contains(&"SIFT_A_THREE_TEST_SENTINEL".to_string()),
-            "drained: {drained:?}"
-        );
+        // Raw EM code, not a normalized Chinese name.
+        let toi = rows
+            .iter()
+            .find(|r| r.item == "TOTAL_OPERATE_INCOME")
+            .expect("known column also passes through verbatim");
+        assert_eq!(toi.value, 172054171891.0);
     }
 }

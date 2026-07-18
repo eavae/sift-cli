@@ -23,7 +23,7 @@ In one line: **`sift` is plumbing — turn the LLM tap and stock data comes out.
 | **📊 Multi-source financials, first-success-wins** | Eastmoney + Sina (+ future cninfo) race in parallel; whoever returns first wins. Pin with `--source` for reproducible runs. |
 | **🗂 Full announcement pipeline** | `announce list` → browse, `show` → metadata, `download` → PDF, `extract` → Markdown with OCR escalation for scanned pages. |
 | **📈 Quotes + OHLC bars** | `quote` for live snapshots, `bars` for daily/weekly/monthly with pre/none/post adjustment. |
-| **🧠 Chinese-item normalization** | Built-in dictionary (`data/items.txt`) maps standard CN names ↔ aliases ↔ EM English columns, so financial output uses one canonical Chinese label per line item — easier for an LLM to reason over. |
+| **🏷 Verbatim item labels** | Financial line items keep their raw upstream names — no lossy remapping. A-share (东方财富) uses EM's English column codes (`TOTAL_OPERATE_INCOME`), HK/sina use their native Chinese labels. `--items` filters against those exact labels. |
 | **💾 Local cache** | Listings (24h file cache), financials (DuckDB + 3-tier TTL, fresher periods get shorter TTL), announcement metadata (DuckDB, no TTL), PDFs (forever). Re-runs return in ms. |
 | **🔒 Offline-first, graceful degradation** | `$HOME` unresolvable → caches disable but commands keep working. Per-symbol failure → `[warn]` on stderr, other symbols still print to stdout. Never crashes the whole run. |
 | **🚀 Single static binary** | DuckDB bundled. No Python / Node / system libs. One `~/.local/bin/sift`, done. |
@@ -118,6 +118,8 @@ sift bars  <code...> [--period daily|weekly|monthly] [--limit N] [--adjust pre|n
 
 Every command accepts `--format tsv|json` (omit for human-aligned table). Multi-symbol calls are best-effort: one failure doesn't sink the rest.
 
+Symbol forms: bare 6 digits = A-share (`600519`), bare 5 digits = HK (`00700`), `600519.SH` / `00700.HK` suffixes and `sh600519` prefixes all work. **Indices** need an explicit exchange prefix and are served by `quote` / `bars` only: `sh000001` = 上证指数, `sz399001` = 深证成指 (output keeps the lowercase prefixed form; `report` / `announce` reject indices). Note `000001` without a prefix is always 平安银行 the stock, never the index.
+
 ## Environment variables
 
 ### 1. PaddleOCR (required for `sift extract --mode fine|auto`)
@@ -191,7 +193,7 @@ Force-refresh by deleting the corresponding file (or passing `--no-cache` where 
 ## Status
 
 - ✅ **F1 search** — fuzzy listing lookup (4/4)
-- ✅ **F2 report** — financials (5/5) + transposed layout + `--source` pin + hot-dict normalize
+- ✅ **F2 report** — financials (5/5) + transposed layout + `--source` pin + verbatim item labels
 - ✅ **F3 announce** — list / show / download / types
 - ✅ **F4 extract** — fast / fine / auto modes
 - ✅ **F5 realtime** — quote / bars

@@ -16,11 +16,13 @@ use crate::http::HttpClient;
 /// One financial-data upstream.
 ///
 /// Implementers own the full upstream → [`FinancialRow`] pipeline:
-/// HTTP transport, JSON / envelope parsing, field translation, unit
-/// scaling, and item-name normalization via
-/// [`crate::domain::items_dict::dict`]. The dispatcher does **not**
-/// post-process the result — what `fetch` returns is what the user
-/// sees, modulo the command layer's sort and `--items` slice.
+/// HTTP transport, JSON / envelope parsing, and unit scaling. Item
+/// labels are passed through **verbatim** — there is no name
+/// dictionary, so each source emits whatever its upstream calls the
+/// line item (EM: raw English column codes; HK / sina: native
+/// Chinese). The dispatcher does **not** post-process the result —
+/// what `fetch` returns is what the user sees, modulo the command
+/// layer's sort and `--items` slice.
 pub trait FinancialSource: Send + Sync {
     /// Short lower-case label woven into error messages and the
     /// `source` column (`"eastmoney"`, `"sina"`).
@@ -32,8 +34,22 @@ pub trait FinancialSource: Send + Sync {
     /// (e.g. sina returns `false` for `--scope parent`).
     fn supports(&self, q: &Query) -> bool;
 
-    /// Fetch normalized rows for `q`. See the trait docs for the
-    /// implementer contract.
+    /// Whether this source joins the **automatic** first-success-wins
+    /// race (the default, no `--source`). Sources that return `false`
+    /// are reachable only when the user pins them with `--source
+    /// <name>`. Default `true`.
+    ///
+    /// sina overrides this to `false`: it labels A-share items with
+    /// Chinese names while EM uses raw English column codes, so racing
+    /// both would make the field names depend on which source happened
+    /// to answer first. Keeping sina opt-in gives the default path a
+    /// single, stable label vocabulary (EM's).
+    fn auto_dispatch(&self) -> bool {
+        true
+    }
+
+    /// Fetch rows for `q` (item labels verbatim from upstream). See
+    /// the trait docs for the implementer contract.
     fn fetch(&self, q: &Query, http: &HttpClient) -> Result<Vec<FinancialRow>, SiftError>;
 
     /// List the report periods this source has available for `symbol`.

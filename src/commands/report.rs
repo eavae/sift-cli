@@ -4,9 +4,7 @@ use clap::{Args, Subcommand, ValueEnum};
 
 use crate::domain::market::{InstrumentKind, Market};
 use crate::domain::period::last_n_filed;
-use crate::domain::{
-    items_dict, Period, Query, Scope, SourceTag, Statement, Symbol, Unit,
-};
+use crate::domain::{Period, Query, Scope, SourceTag, Statement, Symbol, Unit};
 use crate::error::SiftError;
 use crate::fetch::report::{
     dispatch_with_cache_named, list_periods_union, load_listing_names, ReportContext,
@@ -262,7 +260,6 @@ fn run_statement(
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
     financial_render::render(&mut handle, &table, fmt)?;
-    emit_unmapped_hint();
     Ok(())
 }
 
@@ -379,12 +376,14 @@ fn resolve_periods(args: &StatementArgs, _stmt: Statement) -> Result<Vec<Period>
     Ok(last_n_filed(today, 8))
 }
 
-/// Resolve the `--items` filter into a list of standardized item
-/// names. Empty input → `None` (no filter: show every column the
-/// source returns, in source order). `--items all` is also `None`.
-/// Each user-supplied token is normalized through the dictionary so
-/// the user can write either the English column name
-/// (`PARENT_NETPROFIT`) or a sina-style synonym.
+/// Resolve the `--items` filter into a list of item labels to keep.
+/// Empty input → `None` (no filter: show every column the source
+/// returns, in source order). `--items all` is also `None`.
+/// Tokens match the **raw upstream label** exactly (trimmed) — there
+/// is no name dictionary, so for A-share EM the user writes the
+/// English column code (`PARENT_NETPROFIT`), and for HK / sina the
+/// native Chinese label. `warn_unmatched_items` flags any token that
+/// matched no column in the result.
 fn resolve_items(raw: &[String], _stmt: Statement) -> Option<Vec<String>> {
     if raw.is_empty() {
         // Default: no filter — render every observed item.
@@ -393,42 +392,7 @@ fn resolve_items(raw: &[String], _stmt: Statement) -> Option<Vec<String>> {
     if raw.len() == 1 && raw[0].eq_ignore_ascii_case("all") {
         return None;
     }
-    let dict = items_dict::dict();
-    let normalized: Vec<String> = raw
-        .iter()
-        .map(|t| {
-            let trimmed = t.trim();
-            dict.lookup(trimmed)
-                .map(|e| e.cn.clone())
-                .unwrap_or_else(|| trimmed.to_string())
-        })
-        .collect();
-    Some(normalized)
-}
-
-/// Print `[hint]` line listing items the dictionary did not know
-/// about. Drains the collector — calling twice in a row only emits
-/// once. No-op when the set is empty.
-fn emit_unmapped_hint() {
-    let unmapped = items_dict::drain_unmapped();
-    if unmapped.is_empty() {
-        return;
-    }
-    let preview: Vec<&str> = unmapped.iter().take(8).map(String::as_str).collect();
-    let more = if unmapped.len() > 8 {
-        format!(", +{} more", unmapped.len() - 8)
-    } else {
-        String::new()
-    };
-    eprintln!(
-        "[hint] {} 个科目未在字典中：{}{}",
-        unmapped.len(),
-        preview.join(", "),
-        more
-    );
-    eprintln!(
-        "       帮我们补字典：https://github.com/eavae/sift-cli/issues (TODO once repo public)"
-    );
+    Some(raw.iter().map(|t| t.trim().to_string()).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -517,16 +481,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_items_normalizes_english_and_sina_synonyms() {
+    fn resolve_items_keeps_raw_tokens_trimmed() {
+        // No dictionary: tokens are the raw upstream labels the user
+        // must match exactly (EM English codes / native Chinese),
+        // only trimmed of surrounding whitespace.
         let raw = vec![
             "PARENT_NETPROFIT".to_string(),
-            "营业总收入".to_string(),
+            "  TOTAL_OPERATE_INCOME  ".to_string(),
             "归属于母公司股东的净利润".to_string(),
         ];
         let items = resolve_items(&raw, Statement::Income).unwrap();
-        assert_eq!(items[0], "归母净利润");
-        assert_eq!(items[1], "营业总收入");
-        assert_eq!(items[2], "归母净利润");
+        assert_eq!(items[0], "PARENT_NETPROFIT");
+        assert_eq!(items[1], "TOTAL_OPERATE_INCOME");
+        assert_eq!(items[2], "归属于母公司股东的净利润");
     }
 
     #[test]

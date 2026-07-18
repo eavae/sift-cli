@@ -169,6 +169,16 @@ pub enum Command {
         #[command(subcommand)]
         cmd: crate::commands::map::MapCmd,
     },
+    #[command(
+        about = "Whole-market业绩报表 snapshot for one period (fetch → ingest → filter/print)",
+        after_long_help = "Examples:\n  \
+                           sift market --period 2024A --limit 20\n  \
+                           sift market --period 2024A --where WEIGHTAVG_ROE>15 --where XSMLL>30 --sort WEIGHTAVG_ROE --desc\n  \
+                           sift market --period 2024A --market star --show TOTAL_OPERATE_INCOME,PARENT_NETPROFIT\n\n\
+                           The whole snapshot is ingested into the fact store (source=screen); for friendly-name \
+                           screening use `sift sql` over v_facts. `--where` here speaks raw EM columns."
+    )]
+    Market(crate::commands::market::MarketArgs),
 }
 
 #[derive(clap::Args, Debug)]

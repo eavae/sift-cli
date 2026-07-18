@@ -64,6 +64,11 @@ pub enum Kind {
     /// item within that period). TTL is applied by the caller in
     /// `fetch::report` against [`CacheEntry::created_at`].
     Financials,
+    /// Whole-market业绩报表 snapshot for one report date, keyed by the
+    /// report-end ISO date. Body is the JSON-serialized `Vec<MarketRow>`
+    /// for that period. TTL is applied by `fetch::market` against
+    /// [`CacheEntry::created_at`] using the same three-bucket policy.
+    MarketSnapshot,
 }
 
 impl Kind {
@@ -71,6 +76,7 @@ impl Kind {
         match self {
             Kind::AnnounceMeta => "announce-meta",
             Kind::Financials => "financials",
+            Kind::MarketSnapshot => "market-snapshot",
         }
     }
 }

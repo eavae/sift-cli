@@ -123,6 +123,64 @@ fn non_blank(s: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
+/// Map a whole-market snapshot to fact rows. Amount columns
+/// ([`eastmoney_screen::AMOUNT_COLS`]) become `qmode = cumulative`;
+/// everything else (ratios / per-share / growth) becomes `qmode = na`.
+/// scope is always consolidated; source is `screen`.
+pub fn market_facts(
+    rows: &[crate::sources::eastmoney_screen::MarketRow],
+    fiscal_year: i32,
+    period_type: PeriodType,
+) -> Vec<FactRow> {
+    use crate::sources::eastmoney_screen::AMOUNT_COLS;
+    let mut out = Vec::new();
+    for r in rows {
+        let symbol = format!("{}.CN-A", r.code);
+        let name = (!r.name.is_empty()).then(|| r.name.clone());
+        let publish_date = r.notice_date.as_deref().and_then(|s| parse_iso_date(s).ok());
+        for (key, value) in &r.metrics {
+            let qmode = if AMOUNT_COLS.contains(&key.as_str()) {
+                QMode::Cumulative
+            } else {
+                QMode::Na
+            };
+            out.push(FactRow {
+                symbol: symbol.clone(),
+                fiscal_year,
+                period_type,
+                qmode,
+                scope: Scope::Consolidated,
+                raw_key: key.clone(),
+                source: "screen".into(),
+                value: *value,
+                currency: None,
+                publish_date,
+                name: name.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// Best-effort whole-market ingest (source=screen). Same contract as
+/// [`ingest_statement`]: `Ok(None)` when the store is unavailable.
+pub fn ingest_market(
+    app: &AppContext,
+    rows: &[crate::sources::eastmoney_screen::MarketRow],
+    fiscal_year: i32,
+    period_type: PeriodType,
+) -> Result<Option<BatchOutcome>, SiftError> {
+    let Some(st) = app.facts.as_ref() else {
+        return Ok(None);
+    };
+    let facts = market_facts(rows, fiscal_year, period_type);
+    let written = st.upsert_facts_bulk(&facts)?;
+    Ok(Some(BatchOutcome {
+        written,
+        skipped: Vec::new(),
+    }))
+}
+
 /// Parse a `#`-header TSV batch and ingest it. In atomic mode a single
 /// parse failure aborts the whole batch (error names the line); in
 /// skip mode parse failures are merged into [`BatchOutcome::skipped`].

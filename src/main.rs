@@ -55,6 +55,7 @@ fn main() {
         Command::Fact { cmd } => run_fact(cmd, fmt),
         Command::Metric { cmd } => run_metric(cmd, fmt),
         Command::Map { cmd } => run_map(cmd, fmt),
+        Command::Market(args) => run_market(args, fmt),
     };
 
     if let Err(e) = result {
@@ -288,4 +289,14 @@ fn run_map(
 ) -> Result<(), SiftError> {
     let ctx = build_app_context(false, true);
     commands::map::run(cmd, &ctx, fmt)
+}
+
+/// Build the AppContext for `sift market` and dispatch. Needs both the
+/// record cache (snapshot) and the fact store (ingest).
+fn run_market(
+    args: crate::commands::market::MarketArgs,
+    fmt: output::Format,
+) -> Result<(), SiftError> {
+    let ctx = build_app_context(true, true);
+    commands::market::run(args, &ctx, fmt)
 }

@@ -11,6 +11,7 @@ pub mod bars_source;
 pub mod cninfo;
 pub mod eastmoney;
 pub mod eastmoney_financials;
+pub mod eastmoney_screen;
 pub mod financial_source;
 pub mod paddleocr;
 pub mod quote_source;

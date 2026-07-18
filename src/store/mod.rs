@@ -245,10 +245,102 @@ impl FactStore {
         Ok(Self { db_path })
     }
 
-    /// Batch UPSERT of facts. See [`Self::run_batch`] for the
-    /// atomic / skip-invalid semantics.
+    /// Batch UPSERT of facts. Prepares the symbol-stub and fact
+    /// statements **once** and reuses them across the batch — this
+    /// matters for whole-market ingest (`sift market`), which writes
+    /// ~150k rows. `atomic == true` wraps the batch in one transaction
+    /// and returns `Err("row N: …")` on the first bad row; `atomic ==
+    /// false` writes each row independently, collecting failures into
+    /// [`BatchOutcome::skipped`].
     pub fn upsert_facts(&self, rows: &[FactRow], atomic: bool) -> Result<BatchOutcome, SiftError> {
-        self.run_batch(rows, atomic, write_fact)
+        let now = now_stamp();
+        with_duckdb(&self.db_path, DuckAccess::Write, |conn| {
+            if atomic {
+                let tx = conn.unchecked_transaction().map_err(io)?;
+                let out = write_facts_prepared(&tx, rows, &now, true)?;
+                tx.commit().map_err(io)?;
+                Ok(out)
+            } else {
+                write_facts_prepared(conn, rows, &now, false)
+            }
+        })
+    }
+
+    /// Bulk UPSERT for whole-market ingest (`sift market`, ~100k rows).
+    /// Row-at-a-time INSERT is pathologically slow in DuckDB, so this
+    /// streams the batch through the Appender into a constraint-free
+    /// staging table, then does two set-based `INSERT … SELECT … ON
+    /// CONFLICT` statements (symbols stub, then facts). All-or-nothing
+    /// (no per-row attribution); returns the number of fact rows
+    /// inserted/updated. Facts CHECK/FK are still enforced on the
+    /// set-based insert.
+    pub fn upsert_facts_bulk(&self, rows: &[FactRow]) -> Result<usize, SiftError> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let now = now_stamp();
+        with_duckdb(&self.db_path, DuckAccess::Write, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS _stage_facts (
+                    symbol TEXT, name TEXT, market TEXT, fiscal_year INTEGER,
+                    period_type TEXT, qmode TEXT, scope TEXT, raw_key TEXT,
+                    source TEXT, value DOUBLE, currency TEXT, publish_date TEXT);
+                 DELETE FROM _stage_facts;",
+            )
+            .map_err(io)?;
+            {
+                let mut app = conn.appender("_stage_facts").map_err(io)?;
+                for r in rows {
+                    let market = market_of(&r.symbol).ok_or_else(|| {
+                        SiftError::Io(format!(
+                            "symbol {:?} lacks a .MARKET suffix (expected e.g. 600519.CN-A)",
+                            r.symbol
+                        ))
+                    })?;
+                    app.append_row(duckdb::params![
+                        r.symbol,
+                        r.name,
+                        market,
+                        r.fiscal_year,
+                        r.period_type.as_str(),
+                        r.qmode.as_str(),
+                        r.scope.as_str(),
+                        r.raw_key,
+                        r.source,
+                        r.value,
+                        r.currency,
+                        r.publish_date.map(fmt_date),
+                    ])
+                    .map_err(io)?;
+                }
+                app.flush().map_err(io)?;
+            }
+            // symbols first (own statement → committed before the FK
+            // check on the facts insert; DuckDB cannot satisfy the FK
+            // within one transaction).
+            conn.execute(
+                "INSERT INTO symbols (symbol, name, market, created_at) \
+                 SELECT DISTINCT symbol, COALESCE(name, symbol), market, ? \
+                 FROM _stage_facts ON CONFLICT DO NOTHING",
+                duckdb::params![now],
+            )
+            .map_err(io)?;
+            let n = conn
+                .execute(
+                    "INSERT INTO facts \
+                     (symbol,fiscal_year,period_type,qmode,scope,raw_key,source,value,currency,publish_date,created_at) \
+                     SELECT symbol,fiscal_year,period_type,qmode,scope,raw_key,source,value,currency,CAST(publish_date AS DATE),? \
+                     FROM _stage_facts \
+                     ON CONFLICT DO UPDATE SET \
+                       value=excluded.value, currency=excluded.currency, \
+                       publish_date=excluded.publish_date, created_at=excluded.created_at",
+                    duckdb::params![now],
+                )
+                .map_err(io)?;
+            conn.execute_batch("DROP TABLE IF EXISTS _stage_facts;")
+                .map_err(io)?;
+            Ok(n)
+        })
     }
 
     /// Batch UPSERT of controlled-vocabulary metric definitions.
@@ -426,10 +518,47 @@ impl FactStore {
     }
 }
 
-/// Insert one fact + its `symbols` stub in the caller's connection /
-/// transaction. The stub uses `name` (falling back to the symbol) and
-/// derives `market` from the symbol's `.MARKET` suffix.
-fn write_fact(conn: &duckdb::Connection, r: &FactRow, now: &str) -> Result<(), SiftError> {
+const FACT_INSERT_SQL: &str = "INSERT INTO facts \
+     (symbol, fiscal_year, period_type, qmode, scope, raw_key, source, value, currency, publish_date, created_at) \
+     VALUES (?,?,?,?,?,?,?,?,?,?,?) \
+     ON CONFLICT DO UPDATE SET \
+       value = excluded.value, currency = excluded.currency, \
+       publish_date = excluded.publish_date, created_at = excluded.created_at";
+const SYMBOL_STUB_SQL: &str =
+    "INSERT INTO symbols (symbol, name, market, created_at) VALUES (?,?,?,?) ON CONFLICT DO NOTHING";
+
+/// Write a fact batch through two statements prepared once on `conn`
+/// (a plain connection or a transaction). In `atomic` mode a row
+/// failure returns `Err("row N: …")`; otherwise failures accumulate in
+/// [`BatchOutcome::skipped`].
+fn write_facts_prepared(
+    conn: &duckdb::Connection,
+    rows: &[FactRow],
+    now: &str,
+    atomic: bool,
+) -> Result<BatchOutcome, SiftError> {
+    let mut sym = conn.prepare(SYMBOL_STUB_SQL).map_err(io)?;
+    let mut fct = conn.prepare(FACT_INSERT_SQL).map_err(io)?;
+    let mut out = BatchOutcome::default();
+    for (i, r) in rows.iter().enumerate() {
+        match write_one_fact(&mut sym, &mut fct, r, now) {
+            Ok(()) => out.written += 1,
+            Err(e) if atomic => return Err(SiftError::Io(format!("row {}: {e}", i + 1))),
+            Err(e) => out.skipped.push((i + 1, format!("{e}"))),
+        }
+    }
+    Ok(out)
+}
+
+/// Insert one fact + its `symbols` stub via prepared statements. The
+/// stub uses `name` (falling back to the symbol) and derives `market`
+/// from the symbol's `.MARKET` suffix.
+fn write_one_fact(
+    sym: &mut duckdb::Statement,
+    fct: &mut duckdb::Statement,
+    r: &FactRow,
+    now: &str,
+) -> Result<(), SiftError> {
     let market = market_of(&r.symbol).ok_or_else(|| {
         SiftError::Io(format!(
             "symbol {:?} lacks a .MARKET suffix (expected e.g. 600519.CN-A)",
@@ -437,35 +566,22 @@ fn write_fact(conn: &duckdb::Connection, r: &FactRow, now: &str) -> Result<(), S
         ))
     })?;
     let stub_name = r.name.as_deref().unwrap_or(&r.symbol);
-    conn.execute(
-        "INSERT INTO symbols (symbol, name, market, created_at) VALUES (?,?,?,?) \
-         ON CONFLICT DO NOTHING",
-        duckdb::params![r.symbol, stub_name, market, now],
-    )
-    .map_err(io)?;
-
+    sym.execute(duckdb::params![r.symbol, stub_name, market, now])
+        .map_err(io)?;
     let publish = r.publish_date.map(fmt_date);
-    conn.execute(
-        "INSERT INTO facts \
-         (symbol, fiscal_year, period_type, qmode, scope, raw_key, source, value, currency, publish_date, created_at) \
-         VALUES (?,?,?,?,?,?,?,?,?,?,?) \
-         ON CONFLICT DO UPDATE SET \
-           value = excluded.value, currency = excluded.currency, \
-           publish_date = excluded.publish_date, created_at = excluded.created_at",
-        duckdb::params![
-            r.symbol,
-            r.fiscal_year,
-            r.period_type.as_str(),
-            r.qmode.as_str(),
-            r.scope.as_str(),
-            r.raw_key,
-            r.source,
-            r.value,
-            r.currency,
-            publish,
-            now,
-        ],
-    )
+    fct.execute(duckdb::params![
+        r.symbol,
+        r.fiscal_year,
+        r.period_type.as_str(),
+        r.qmode.as_str(),
+        r.scope.as_str(),
+        r.raw_key,
+        r.source,
+        r.value,
+        r.currency,
+        publish,
+        now,
+    ])
     .map_err(io)?;
     Ok(())
 }
@@ -851,6 +967,29 @@ mod tests {
             .query("SELECT key, mapped FROM v_facts WHERE symbol='600519.CN-A'")
             .unwrap();
         assert_eq!(rows, vec![vec!["revenue".to_string(), "true".to_string()]]);
+    }
+
+    #[test]
+    fn bulk_upsert_stubs_symbols_and_upserts_facts() {
+        let (_d, s) = temp_store();
+        let mut a = fact("600519.CN-A", "TOTAL_OPERATE_INCOME", 100.0);
+        a.name = Some("贵州茅台".into());
+        a.source = "screen".into();
+        let b = fact("000001.CN-A", "WEIGHTAVG_ROE", 10.0);
+        assert_eq!(s.upsert_facts_bulk(&[a.clone(), b]).unwrap(), 2);
+        // Symbol stub carries the real name via COALESCE.
+        let (_c, rows) = s
+            .query("SELECT name FROM symbols WHERE symbol='600519.CN-A'")
+            .unwrap();
+        assert_eq!(rows, vec![vec!["贵州茅台".to_string()]]);
+        // Re-run overwrites (idempotent UPSERT).
+        let mut a2 = a;
+        a2.value = 200.0;
+        s.upsert_facts_bulk(&[a2]).unwrap();
+        let (_c, rows) = s
+            .query("SELECT value FROM facts WHERE raw_key='TOTAL_OPERATE_INCOME'")
+            .unwrap();
+        assert_eq!(rows, vec![vec!["200".to_string()]]);
     }
 
     #[test]

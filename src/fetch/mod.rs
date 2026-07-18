@@ -39,6 +39,7 @@
 pub mod announce;
 pub mod bars;
 pub mod extract;
+pub mod market;
 pub mod quote;
 pub mod report;
 pub mod search;

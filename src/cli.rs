@@ -118,6 +118,35 @@ pub enum Command {
                            sift bars 600519 --period monthly --limit 24 --source eastmoney         # 2y monthly, EM upstream"
     )]
     Bars(crate::commands::bars::BarsArgs),
+    #[command(
+        about = "Run a read-only SQL query against the local fact store (~/.sift/facts.duckdb)",
+        after_long_help = "Examples:\n  \
+                           sift sql \"SELECT symbol,value FROM v_facts WHERE key='roe' AND period='2024A' ORDER BY value DESC LIMIT 20\"\n  \
+                           sift sql \"SELECT period_end,value FROM v_facts WHERE symbol='600519.CN-A' AND raw_key='TOTAL_OPERATE_INCOME' ORDER BY period_end\"\n\n\
+                           Writes are rejected — use `sift _sql` for the writable escape hatch."
+    )]
+    Sql(crate::commands::sql::SqlArgs),
+    #[command(
+        name = "_sql",
+        about = "Escape hatch: run ANY SQL (INSERT/UPDATE/DELETE/DDL) against the fact store — dangerous",
+        after_long_help = "The underscore marks this as non-routine. CHECK / foreign-key / NOT NULL \
+                           constraints are still enforced by DuckDB, so this can delete and fix rows \
+                           but cannot insert invalid data; DDL (DROP/ALTER) is unrestricted.\n\nExamples:\n  \
+                           sift _sql \"DELETE FROM facts WHERE source='screen' AND fiscal_year<2015\"\n  \
+                           sift _sql \"UPDATE facts SET currency='CNY' WHERE currency IS NULL\""
+    )]
+    SqlWrite(crate::commands::sql::SqlArgs),
+    #[command(
+        about = "Write facts into the local store: one via flags, or a #header TSV batch on stdin",
+        after_long_help = "Examples:\n  \
+                           sift fact set --symbol 600519.CN-A --period 2024A --key employee_comp --value 1.5e9\n  \
+                           printf '#symbol\\tfiscal_year\\tperiod_type\\traw_key\\tvalue\\n600519.CN-A\\t2024\\tannual\\temployee_comp\\t1.5e9\\n' | sift fact set\n  \
+                           sift fact rm --symbol 600519.CN-A --period 2024A --key employee_comp"
+    )]
+    Fact {
+        #[command(subcommand)]
+        cmd: crate::commands::fact::FactCmd,
+    },
 }
 
 #[derive(clap::Args, Debug)]

@@ -1075,6 +1075,7 @@ mod tests {
             http: HttpClient::new(),
             file_cache: None,
             records_cache: Some(cache),
+            facts: None,
         };
         let q = Query {
             symbol: cached.symbol.clone(),

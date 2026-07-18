@@ -2,6 +2,7 @@ mod app;
 mod cache;
 mod cli;
 mod commands;
+mod db;
 mod domain;
 mod error;
 mod fetch;
@@ -9,6 +10,8 @@ mod http;
 mod output;
 mod pdf;
 mod sources;
+mod service;
+mod store;
 
 use clap::{CommandFactory, FromArgMatches};
 
@@ -47,6 +50,9 @@ fn main() {
         Command::Extract(args) => run_extract(args, fmt),
         Command::Quote(args) => run_quote(args, fmt),
         Command::Bars(args) => run_bars(args, fmt),
+        Command::Sql(args) => run_sql(args, fmt, false),
+        Command::SqlWrite(args) => run_sql(args, fmt, true),
+        Command::Fact { cmd } => run_fact(cmd, fmt),
     };
 
     if let Err(e) = result {
@@ -89,20 +95,44 @@ fn open_records_cache(file_cache: Option<&FileCache>) -> Option<RecordCache> {
     }
 }
 
-/// Build an [`AppContext`] with the HTTP client and optional caches.
-/// `with_records = true` also opens the DuckDB record cache (used by
-/// `report`, `announce`, `extract`); `false` skips it (used by `search`).
-fn build_app_context(with_records: bool) -> AppContext {
+/// Open `~/.sift/facts.duckdb` — the persistent, user-curated fact
+/// store (distinct from the disposable `records.duckdb` cache). `None`
+/// is the warn-and-continue mode: `$HOME` unresolvable or the DuckDB
+/// open failed; every caller guards on the Option.
+fn open_fact_store() -> Option<store::FactStore> {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => {
+            eprintln!("[warn] disabling fact store: cannot resolve $HOME");
+            return None;
+        }
+    };
+    match store::FactStore::open(home.join(".sift").join("facts.duckdb")) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("[warn] fact store unavailable: {e}");
+            None
+        }
+    }
+}
+
+/// Build an [`AppContext`] with the HTTP client and optional caches /
+/// fact store. `with_records` opens the DuckDB record cache (used by
+/// `report`, `announce`, `extract`); `with_facts` opens the fact store
+/// (used by `sql` / `fact`, and later `report`/`market` ingest).
+fn build_app_context(with_records: bool, with_facts: bool) -> AppContext {
     let file_cache = open_file_cache();
     let records_cache = if with_records {
         open_records_cache(file_cache.as_ref())
     } else {
         None
     };
+    let facts = if with_facts { open_fact_store() } else { None };
     AppContext {
         http: http::HttpClient::new(),
         file_cache,
         records_cache,
+        facts,
     }
 }
 
@@ -110,7 +140,7 @@ fn build_app_context(with_records: bool) -> AppContext {
 /// cache is filesystem-only (atomic JSON files under
 /// `<root>/cninfo/`), so the ctx carries no DuckDB handle here.
 fn run_search(args: cli::SearchArgs, fmt: output::Format) -> Result<(), SiftError> {
-    let ctx = build_app_context(false);
+    let ctx = build_app_context(false, false);
     commands::search::run(args, &ctx, fmt)
 }
 
@@ -123,7 +153,7 @@ fn run_report(
     cmd: crate::commands::report::ReportCmd,
     fmt: output::Format,
 ) -> Result<(), SiftError> {
-    let app = build_app_context(true);
+    let app = build_app_context(true, false);
     let sources = vec![
         sources::eastmoney_financials::build(),
         sources::sina_financials::build(),
@@ -141,7 +171,7 @@ fn run_announce(
     cmd: crate::commands::announce::AnnounceCmd,
     fmt: output::Format,
 ) -> Result<(), SiftError> {
-    let ctx = build_app_context(true);
+    let ctx = build_app_context(true, false);
     commands::announce::run(cmd, &ctx, fmt)
 }
 
@@ -154,7 +184,7 @@ fn run_extract(
     args: crate::commands::extract::ExtractArgs,
     fmt: output::Format,
 ) -> Result<(), SiftError> {
-    let ctx = build_app_context(true);
+    let ctx = build_app_context(true, false);
     commands::extract::run(args, &ctx, fmt)
 }
 
@@ -177,6 +207,7 @@ fn run_quote(
         http: http::HttpClient::new(),
         file_cache: None,
         records_cache: None,
+        facts: None,
     };
     let sources: Vec<Box<dyn sources::quote_source::QuoteSource>> = vec![
         sources::eastmoney::quote::build(),
@@ -200,6 +231,7 @@ fn run_bars(
         http: http::HttpClient::new(),
         file_cache: None,
         records_cache: None,
+        facts: None,
     };
     let sources: Vec<Box<dyn sources::bars_source::BarsSource>> = vec![
         sources::tencent::bars::build(),
@@ -210,4 +242,30 @@ fn run_bars(
         sources: &sources,
     };
     commands::bars::run(args, &ctx, fmt)
+}
+
+/// Build the AppContext for `sift sql` / `sift _sql` and dispatch.
+/// Only the fact store is needed — no HTTP caches. `write == true`
+/// routes to the `_sql` writable escape hatch.
+fn run_sql(
+    args: crate::commands::sql::SqlArgs,
+    fmt: output::Format,
+    write: bool,
+) -> Result<(), SiftError> {
+    let ctx = build_app_context(false, true);
+    if write {
+        commands::sql::run_write(args, &ctx, fmt)
+    } else {
+        commands::sql::run(args, &ctx, fmt)
+    }
+}
+
+/// Build the AppContext for `sift fact {set,rm}` and dispatch. Only
+/// the fact store is needed.
+fn run_fact(
+    cmd: crate::commands::fact::FactCmd,
+    _fmt: output::Format,
+) -> Result<(), SiftError> {
+    let ctx = build_app_context(false, true);
+    commands::fact::run(cmd, &ctx)
 }

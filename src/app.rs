@@ -27,10 +27,12 @@
 use crate::cache::file::FileCache;
 use crate::cache::record::RecordCache;
 use crate::http::HttpClient;
+use crate::store::FactStore;
 
-/// Cross-cutting state for the whole binary. Three fields, all used
-/// by ≥2 commands: HTTP transport (3/3), file cache (3/3), record
-/// cache (report + announce). Per-feature state hangs off feature
+/// Cross-cutting state for the whole binary. Every field is used by
+/// ≥2 commands: HTTP transport, file cache, record cache (report +
+/// announce), and the fact store (`sql` + `fact`, and later
+/// `report`/`market` ingest). Per-feature state hangs off feature
 /// contexts (see [`crate::fetch::report::ReportContext`]).
 #[derive(Default)]
 pub struct AppContext {
@@ -49,4 +51,10 @@ pub struct AppContext {
     /// the command didn't need a record cache or when opening the
     /// file failed (warn-and-continue path in `main.rs`).
     pub records_cache: Option<RecordCache>,
+    /// Persistent, user-curated financial **fact store**
+    /// (`~/.sift/facts.duckdb`) — the storage handle for `sift sql` /
+    /// `fact` / (later) `report`/`market` ingest. Distinct from the
+    /// disposable `records_cache`. `None` when the command didn't need
+    /// it or `$HOME` / the DuckDB open failed (warn-and-continue).
+    pub facts: Option<FactStore>,
 }

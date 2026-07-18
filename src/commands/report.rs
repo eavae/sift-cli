@@ -137,6 +137,12 @@ pub struct StatementArgs {
     /// serving the old value.
     #[arg(long)]
     pub no_cache: bool,
+
+    /// Do not write the fetched rows into the local fact store.
+    /// By default `report` ingests raw values best-effort (a failure
+    /// only warns and never blocks the printed report).
+    #[arg(long)]
+    pub no_ingest: bool,
 }
 
 /// Quarter reporting basis for `--qmode`.
@@ -298,6 +304,19 @@ fn run_statement(
         warn_missing_single_quarters(&missing);
         all_rows = singles;
     }
+
+    // Ingest raw rows into the fact store (best-effort) *before*
+    // `apply_unit` — the store holds unscaled values. Failure never
+    // blocks the printed report.
+    if !args.no_ingest {
+        match crate::service::facts::ingest_statement(ctx.app, &all_rows, qmode == QModeArg::Single)
+        {
+            Ok(Some(_)) => {}
+            Ok(None) => eprintln!("[warn] 事实库不可用，跳过入库（不影响输出）"),
+            Err(e) => eprintln!("[warn] facts 入库失败（不影响输出）: {e}"),
+        }
+    }
+
     let all_rows = financial_render::apply_unit(all_rows, unit);
 
     // Back-fill the security short name (sina lrb does not return it)

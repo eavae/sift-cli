@@ -153,7 +153,7 @@ fn run_report(
     cmd: crate::commands::report::ReportCmd,
     fmt: output::Format,
 ) -> Result<(), SiftError> {
-    let app = build_app_context(true, false);
+    let app = build_app_context(true, true);
     let sources = vec![
         sources::eastmoney_financials::build(),
         sources::sina_financials::build(),

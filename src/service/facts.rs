@@ -10,6 +10,7 @@
 use time::{Date, Month};
 
 use crate::app::AppContext;
+use crate::domain::financial_row::{FinancialRow, Scope as DomainScope, Statement};
 use crate::domain::period::{Period, PeriodType};
 use crate::domain::symbol::Symbol;
 use crate::error::SiftError;
@@ -68,6 +69,63 @@ pub fn execute(app: &AppContext, sql: &str) -> Result<SqlOutcome, SiftError> {
 /// Ingest already-built rows (used by story-02/04 producers too).
 pub fn ingest(app: &AppContext, rows: &[FactRow], atomic: bool) -> Result<BatchOutcome, SiftError> {
     store(app)?.upsert_facts(rows, atomic)
+}
+
+/// Map one `report` row to a [`FactRow`]. `qmode` is derived from the
+/// statement + single-quarter flag (income/cashflow →
+/// single/cumulative; balance → point; indicator → na); `scope`
+/// follows the row. The caller must pass **raw** rows (before
+/// `apply_unit` scaling) — the fact store holds raw values only.
+pub fn fact_row_from(r: &FinancialRow, single: bool) -> FactRow {
+    let qmode = match r.statement {
+        Statement::Income | Statement::Cashflow => {
+            if single {
+                QMode::Single
+            } else {
+                QMode::Cumulative
+            }
+        }
+        Statement::Balance => QMode::Point,
+        Statement::Indicator => QMode::Na,
+    };
+    let scope = match r.scope {
+        DomainScope::Consolidated => Scope::Consolidated,
+        DomainScope::Parent => Scope::Parent,
+    };
+    FactRow {
+        symbol: r.symbol.display_symbol(),
+        fiscal_year: r.period.year(),
+        period_type: r.period_type,
+        qmode,
+        scope,
+        raw_key: r.item.clone(),
+        source: r.source.as_str().to_string(),
+        value: r.value,
+        currency: non_blank(&r.currency),
+        publish_date: r.publish_date,
+        name: non_blank(&r.name),
+    }
+}
+
+/// Best-effort ingest of a statement's raw rows. `Ok(None)` means the
+/// fact store was unavailable (caller warns and moves on); `Ok(Some)`
+/// is a completed write; `Err` is a store failure the caller downgrades
+/// to a warning — ingest never aborts the user-facing report.
+pub fn ingest_statement(
+    app: &AppContext,
+    rows: &[FinancialRow],
+    single: bool,
+) -> Result<Option<BatchOutcome>, SiftError> {
+    let Some(st) = app.facts.as_ref() else {
+        return Ok(None);
+    };
+    let facts: Vec<FactRow> = rows.iter().map(|r| fact_row_from(r, single)).collect();
+    st.upsert_facts(&facts, true).map(Some)
+}
+
+fn non_blank(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty()).then(|| t.to_string())
 }
 
 /// Parse a `#`-header TSV batch and ingest it. In atomic mode a single
@@ -291,6 +349,51 @@ mod tests {
         assert_eq!(row.source, "manual");
         assert_eq!(row.value, 1.5e9);
         assert_eq!(row.raw_key, "employee_comp");
+    }
+
+    fn fin_row(stmt: Statement, pt: PeriodType, scope: DomainScope, value: f64) -> FinancialRow {
+        use crate::domain::financial_row::{AuditStatus, SourceTag, Unit};
+        use time::{Date, Month};
+        FinancialRow {
+            symbol: Symbol::parse("600519").unwrap(),
+            name: "贵州茅台".into(),
+            period: Date::from_calendar_date(2024, Month::September, 30).unwrap(),
+            period_type: pt,
+            statement: stmt,
+            scope,
+            item: "TOTAL_OPERATE_INCOME".into(),
+            value,
+            unit: Unit::Raw,
+            currency: "CNY".into(),
+            publish_date: None,
+            audit: AuditStatus::Unknown,
+            source: SourceTag::EastMoney,
+        }
+    }
+
+    #[test]
+    fn fact_row_from_maps_qmode_and_scope() {
+        // income cumulative
+        let f = fact_row_from(&fin_row(Statement::Income, PeriodType::Q3, DomainScope::Consolidated, 42.0), false);
+        assert_eq!(f.symbol, "600519.CN-A");
+        assert_eq!(f.fiscal_year, 2024);
+        assert_eq!(f.qmode, QMode::Cumulative);
+        assert_eq!(f.scope, Scope::Consolidated);
+        assert_eq!(f.raw_key, "TOTAL_OPERATE_INCOME");
+        assert_eq!(f.source, "eastmoney");
+        assert_eq!(f.value, 42.0);
+        assert_eq!(f.currency.as_deref(), Some("CNY"));
+        assert_eq!(f.name.as_deref(), Some("贵州茅台"));
+        // income single
+        let s = fact_row_from(&fin_row(Statement::Income, PeriodType::Q3, DomainScope::Consolidated, 1.0), true);
+        assert_eq!(s.qmode, QMode::Single);
+        // balance → point, parent scope
+        let b = fact_row_from(&fin_row(Statement::Balance, PeriodType::Q3, DomainScope::Parent, 1.0), false);
+        assert_eq!(b.qmode, QMode::Point);
+        assert_eq!(b.scope, Scope::Parent);
+        // indicator → na
+        let i = fact_row_from(&fin_row(Statement::Indicator, PeriodType::Q3, DomainScope::Consolidated, 1.0), false);
+        assert_eq!(i.qmode, QMode::Na);
     }
 
     #[test]

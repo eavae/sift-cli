@@ -269,16 +269,7 @@ fn run_statement(
 /// table with no feedback.
 fn warn_unmatched_items(keep: Option<&[String]>, table: &financial_render::PivotedTable) {
     let Some(filter) = keep else { return };
-    let present: std::collections::HashSet<&str> = table
-        .blocks
-        .iter()
-        .flat_map(|b| b.items.iter().map(|(n, _)| n.as_str()))
-        .collect();
-    let missing: Vec<&str> = filter
-        .iter()
-        .map(String::as_str)
-        .filter(|i| !present.contains(i))
-        .collect();
+    let missing = unmatched_items(filter, table);
     if !missing.is_empty() {
         eprintln!(
             "[warn] --items 中有 {} 个科目未匹配（精确匹配；不带 --items 运行可先看全部列名）: {}",
@@ -286,6 +277,24 @@ fn warn_unmatched_items(keep: Option<&[String]>, table: &financial_render::Pivot
             missing.join(", ")
         );
     }
+}
+
+/// Pure core of [`warn_unmatched_items`]: the `--items` tokens that
+/// matched no column in the pivoted output, in input order.
+fn unmatched_items<'a>(
+    filter: &'a [String],
+    table: &financial_render::PivotedTable,
+) -> Vec<&'a str> {
+    let present: std::collections::HashSet<&str> = table
+        .blocks
+        .iter()
+        .flat_map(|b| b.items.iter().map(|(n, _)| n.as_str()))
+        .collect();
+    filter
+        .iter()
+        .map(String::as_str)
+        .filter(|i| !present.contains(i))
+        .collect()
 }
 
 fn parse_symbols(raw: &[String]) -> Result<Vec<Symbol>, SiftError> {
@@ -478,6 +487,43 @@ mod tests {
     fn resolve_items_all_returns_no_filter() {
         let items = resolve_items(&["all".to_string()], Statement::Income);
         assert!(items.is_none());
+    }
+
+    #[test]
+    fn unmatched_items_flags_only_absent_tokens() {
+        use crate::output::financial_render::{PivotedTable, SymbolBlock};
+        // A block that presents exactly two raw EM columns.
+        let block = SymbolBlock {
+            symbol: Symbol {
+                code: "600519".into(),
+                market: Market::CnA,
+                kind: InstrumentKind::Equity,
+            },
+            name: "贵州茅台".into(),
+            statement: Statement::Income,
+            scope: "consolidated".into(),
+            currency: "CNY".into(),
+            unit: Unit::Raw,
+            periods: vec![],
+            items: vec![
+                ("TOTAL_OPERATE_INCOME".into(), vec![]),
+                ("BASIC_EPS".into(), vec![]),
+            ],
+            sources: vec![],
+        };
+        let table = PivotedTable { blocks: vec![block] };
+
+        let filter = vec![
+            "TOTAL_OPERATE_INCOME".to_string(), // present
+            "ROE".to_string(),                  // absent (typo / wrong label)
+            "BASIC_EPS".to_string(),            // present
+        ];
+        let missing = unmatched_items(&filter, &table);
+        assert_eq!(missing, vec!["ROE"]);
+
+        // All-present → nothing flagged.
+        let ok = vec!["BASIC_EPS".to_string()];
+        assert!(unmatched_items(&ok, &table).is_empty());
     }
 
     #[test]

@@ -515,6 +515,7 @@ mod tests {
         supports_fn: Box<SupportsFn>,
         fetch_fn: Box<FetchFn>,
         periods_fn: Option<Box<PeriodsFn>>,
+        auto: bool,
     }
 
     impl MockSource {
@@ -528,6 +529,7 @@ mod tests {
                 supports_fn: Box::new(supports),
                 fetch_fn: Box::new(fetch),
                 periods_fn: None,
+                auto: true,
             }
         }
 
@@ -538,11 +540,20 @@ mod tests {
             self.periods_fn = Some(Box::new(periods));
             self
         }
+
+        /// Opt this mock out of the automatic race (mirrors sina).
+        fn opt_in_only(mut self) -> Self {
+            self.auto = false;
+            self
+        }
     }
 
     impl FinancialSource for MockSource {
         fn name(&self) -> &'static str {
             self.name
+        }
+        fn auto_dispatch(&self) -> bool {
+            self.auto
         }
         fn supports(&self, q: &Query) -> bool {
             (self.supports_fn)(q)
@@ -638,6 +649,85 @@ mod tests {
         let rows = run(vec![Box::new(a)]).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].source, SourceTag::EastMoney);
+    }
+
+    #[test]
+    fn auto_race_excludes_opt_out_source() {
+        // An `auto_dispatch() == false` source (like sina) must not be
+        // raced on the default path — its fetch must never fire.
+        let optout = MockSource::new(
+            "optout",
+            |_| true,
+            |_| panic!("opt-out source must not be fetched on the auto path"),
+        )
+        .opt_in_only();
+        let em = MockSource::new(
+            "em",
+            |_| true,
+            |_| Ok(vec![fixture_row(SourceTag::EastMoney, "EM")]),
+        );
+        let rows = run(vec![Box::new(optout), Box::new(em)]).unwrap();
+        assert_eq!(rows[0].symbol.code, "EM");
+    }
+
+    #[test]
+    fn auto_race_with_only_opt_out_sources_finds_nothing() {
+        // If every applicable source opted out, the auto path has no
+        // one to race → NoApplicableSource (rather than silently
+        // reaching an opt-in-only source).
+        let optout = MockSource::new(
+            "optout",
+            |_| true,
+            |_| panic!("must not be fetched"),
+        )
+        .opt_in_only();
+        let err = run(vec![Box::new(optout)]).unwrap_err();
+        assert!(matches!(err, SiftError::NoApplicableSource(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn pinned_dispatch_reaches_opt_out_source() {
+        // `--source optout` bypasses the auto-dispatch filter.
+        let optout = MockSource::new(
+            "optout",
+            |_| true,
+            |_| Ok(vec![fixture_row(SourceTag::Sina, "PINNED")]),
+        )
+        .opt_in_only();
+        let em = MockSource::new(
+            "em",
+            |_| true,
+            |_| Ok(vec![fixture_row(SourceTag::EastMoney, "EM")]),
+        );
+        let sources: Vec<Box<dyn FinancialSource>> = vec![Box::new(optout), Box::new(em)];
+        let app = empty_app();
+        let ctx = ReportContext { app: &app, sources: &sources };
+        let rows = dispatch_with_cache_named(&fixture_query(), &ctx, Some("optout")).unwrap();
+        assert_eq!(rows[0].symbol.code, "PINNED");
+    }
+
+    #[test]
+    fn list_periods_union_excludes_opt_out_unless_pinned() {
+        let sym = fixture_query().symbol;
+        let em = MockSource::new("em", |_| true, |_| Ok(vec![]))
+            .with_periods(|| Ok(vec![Period::Annual(2024)]));
+        let optout = MockSource::new("optout", |_| true, |_| Ok(vec![]))
+            .with_periods(|| Ok(vec![Period::Annual(2023)]))
+            .opt_in_only();
+        let sources: Vec<Box<dyn FinancialSource>> = vec![Box::new(em), Box::new(optout)];
+        let app = empty_app();
+        let ctx = ReportContext { app: &app, sources: &sources };
+
+        // Unpinned: opt-out source's periods are absent.
+        let auto = list_periods_union(&sym, &ctx, None).unwrap();
+        let auto_years: Vec<i32> = auto.iter().map(|(d, _, _)| d.year()).collect();
+        assert!(auto_years.contains(&2024), "auto: {auto_years:?}");
+        assert!(!auto_years.contains(&2023), "opt-out leaked: {auto_years:?}");
+
+        // Pinned to the opt-out source: its periods appear.
+        let pinned = list_periods_union(&sym, &ctx, Some("optout")).unwrap();
+        let pinned_years: Vec<i32> = pinned.iter().map(|(d, _, _)| d.year()).collect();
+        assert_eq!(pinned_years, vec![2023]);
     }
 
     #[test]

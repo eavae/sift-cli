@@ -160,6 +160,19 @@ fn parse(bytes: &[u8], symbol: &Symbol) -> Result<QuoteRow, SiftError> {
         .ok_or_else(|| SiftError::NotFound(format!("{}.{}", symbol.code, symbol.market.as_upper())))?
         .to_string();
 
+    // EM keeps the old code of a re-numbered listing (e.g. the BSE
+    // 83xxxx → 92xxxx migration) alive as a placeholder whose name it
+    // suffixes with "(已切换)" and whose prices are all 0. Returning
+    // that 0.00 row silently would hand an agent a fake quote; treat
+    // it as NotFound so it fails like `sift bars` does on the same
+    // code (a `[warn]` line, no bogus data).
+    if name.contains("已切换") {
+        return Err(SiftError::NotFound(format!(
+            "{} 已切换代码（EM: {name}）；用 `sift search` 查询新代码",
+            symbol.display_symbol(),
+        )));
+    }
+
     let scale = price_factor(symbol.market);
     let price = require_f64(data, "f43")? / scale;
     let high = require_f64(data, "f44")? / scale;
@@ -327,6 +340,17 @@ mod tests {
         assert!((row.price - 132.359).abs() < 1e-6);
         assert!((row.change - -0.71).abs() < 1e-6); // f169 follows the price scale (÷1000 for HK)
         assert!((row.pct_change - -0.53).abs() < 1e-6); // f170 is always ÷100
+    }
+
+    #[test]
+    fn switched_code_placeholder_is_not_found_not_a_zero_quote() {
+        // EM keeps a re-numbered listing's old code alive with a
+        // "(已切换)" name and all-zero prices (the BSE 83xxxx→92xxxx
+        // migration). That must surface as NotFound, not a 0.00 row.
+        let body = em_body("梓橦宫(已切换)").replace("\"f57\":\"600519\"", "\"f57\":\"832566\"");
+        let err = parse(body.as_bytes(), &sym("832566", Market::CnA)).unwrap_err();
+        assert!(matches!(err, SiftError::NotFound(_)), "got {err:?}");
+        assert!(err.to_string().contains("已切换"), "msg: {err}");
     }
 
     #[test]

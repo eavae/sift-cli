@@ -233,6 +233,7 @@ fn run_statement(
 
     validate_scope(scope, &symbols)?;
     validate_not_index(&symbols)?;
+    validate_indicator_market(stmt, &symbols)?;
 
     let source_name = args.source.as_source_tag().map(SourceTag::as_str);
     let mut all_rows = Vec::new();
@@ -321,6 +322,25 @@ fn validate_not_index(symbols: &[Symbol]) -> Result<(), SiftError> {
         return Err(SiftError::NoApplicableSource(format!(
             "index {} (`sift report` covers equities only; use `sift quote` / `sift bars`)",
             bad.display_symbol()
+        )));
+    }
+    Ok(())
+}
+
+/// `report indicator` is only implemented for A-share — the HK
+/// (`RPT_HKF10_FN_MAININDICATOR`) and US indicator adapters are
+/// stubbed. Fail fast with a clear pointer instead of returning a
+/// silently empty table (the source `supports` matrix would otherwise
+/// admit HK consolidated and the stub would hand back zero rows).
+fn validate_indicator_market(stmt: Statement, symbols: &[Symbol]) -> Result<(), SiftError> {
+    if stmt != Statement::Indicator {
+        return Ok(());
+    }
+    if let Some(bad) = symbols.iter().find(|s| s.market != Market::CnA) {
+        return Err(SiftError::NoApplicableSource(format!(
+            "indicator is A-share only ({} is {}); use `report income/balance/cashflow` instead",
+            bad.display_symbol(),
+            bad.market.as_upper(),
         )));
     }
     Ok(())
@@ -526,6 +546,30 @@ mod tests {
             kind: InstrumentKind::Equity,
         }];
         validate_not_index(&eq).unwrap();
+    }
+
+    #[test]
+    fn validate_indicator_market_rejects_hk_but_allows_a_share() {
+        let hk = vec![Symbol {
+            code: "00700".into(),
+            market: Market::Hk,
+            kind: InstrumentKind::Equity,
+        }];
+        // Indicator on HK → clear error (was a silent empty table).
+        let err = validate_indicator_market(Statement::Indicator, &hk).unwrap_err();
+        assert!(matches!(err, SiftError::NoApplicableSource(_)));
+        assert!(err.to_string().contains("income/balance/cashflow"), "msg: {err}");
+
+        // Non-indicator statements on HK are unaffected.
+        validate_indicator_market(Statement::Income, &hk).unwrap();
+
+        // Indicator on A-share is fine.
+        let cn = vec![Symbol {
+            code: "600519".into(),
+            market: Market::CnA,
+            kind: InstrumentKind::Equity,
+        }];
+        validate_indicator_market(Statement::Indicator, &cn).unwrap();
     }
 
     #[test]

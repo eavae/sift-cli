@@ -50,6 +50,11 @@ fn main() {
     };
 
     if let Err(e) = result {
+        // Broken pipe (`sift … | head`) — the Unix convention is a
+        // silent exit 0, no error banner.
+        if matches!(e, SiftError::BrokenPipe) {
+            std::process::exit(0);
+        }
         eprintln!("sift: {e}");
         std::process::exit(e.exit_code());
     }

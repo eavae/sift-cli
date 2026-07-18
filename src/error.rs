@@ -21,6 +21,12 @@ pub enum SiftError {
     /// disk problems are not blamed on cninfo.
     #[error("io error: {0}")]
     Io(String),
+    /// stdout's read end closed mid-write (EPIPE — e.g. `sift bars …
+    /// | head -2`). Rust ignores SIGPIPE, so the write surfaces as an
+    /// `io::Error` instead; `main` maps this variant to a **silent**
+    /// exit 0, the Unix convention for pipe truncation.
+    #[error("broken pipe")]
+    BrokenPipe,
     /// Every applicable source either errored or panicked. Carries one
     /// `(name, message)` per source so the user can see which upstream
     /// broke and how. Exit code 3 (network category).
@@ -66,6 +72,9 @@ impl SiftError {
     /// Exit-code mapping for the binary.
     pub fn exit_code(&self) -> i32 {
         match self {
+            // Pipe truncation is a success-path exit (Unix convention);
+            // `main` also skips printing the error for this variant.
+            SiftError::BrokenPipe => 0,
             SiftError::Internal(_)
             | SiftError::Parse(_)
             | SiftError::Io(_)
@@ -90,6 +99,7 @@ mod tests {
         assert_eq!(SiftError::NoApplicableSource("x".into()).exit_code(), 1);
         assert_eq!(SiftError::MissingOrgId("x".into()).exit_code(), 1);
         assert_eq!(SiftError::OcrTokenMissing.exit_code(), 1);
+        assert_eq!(SiftError::BrokenPipe.exit_code(), 0);
         assert_eq!(SiftError::Network("x".into()).exit_code(), 3);
         assert_eq!(
             SiftError::AllSourcesFailed(vec![("a".into(), "x".into())]).exit_code(),

@@ -2,11 +2,7 @@
 //! symbol.
 //!
 //! The `RenderRow` impl carries the table / TSV column layout;
-//! `Serialize` is only there for NDJSON,
-//! which `commands/quote.rs::run` soft-rejects up front — so the
-//! `Serialize` derive is kept purely so this row shape stays
-//! interchangeable with the other `RenderRow` types (search /
-//! announce / bars).
+//! `Serialize` drives the NDJSON renderer (`--format json`).
 
 use serde::Serialize;
 

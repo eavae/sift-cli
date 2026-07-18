@@ -25,6 +25,7 @@ use time::Date;
 
 use crate::app::AppContext;
 use crate::domain::announcement::{categories, lookup, AnnouncementRow};
+use crate::domain::market::InstrumentKind;
 use crate::domain::Symbol;
 use crate::error::SiftError;
 use crate::fetch::announce::{AnnounceResolver, StdinContext};
@@ -211,10 +212,19 @@ fn expand_categories(zh: Option<&str>) -> Result<Vec<String>, SiftError> {
 /// search cache (3-step: cache → auto-fetch → MissingOrgId). Errors
 /// out on the first unresolved code — the user almost certainly wants
 /// to fix the typo before issuing the (possibly large) query.
+///
+/// Indices are rejected up front: cninfo does not list them, so they
+/// would otherwise die with a misleading `MissingOrgId`.
 fn resolve_all(ctx: &AppContext, raw: &[String]) -> Result<Vec<ResolvedSymbol>, SiftError> {
     raw.iter()
         .map(|u| {
             let sym = Symbol::parse(u)?;
+            if sym.kind == InstrumentKind::Index {
+                return Err(SiftError::NoApplicableSource(format!(
+                    "index {} (`sift announce` covers listed equities only)",
+                    sym.display_symbol()
+                )));
+            }
             resolve_org_id(ctx, &sym.code)
         })
         .collect()

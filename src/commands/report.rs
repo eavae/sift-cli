@@ -2,7 +2,7 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 
-use crate::domain::market::Market;
+use crate::domain::market::{InstrumentKind, Market};
 use crate::domain::period::last_n_filed;
 use crate::domain::{
     items_dict, Period, Query, Scope, SourceTag, Statement, Symbol, Unit,
@@ -50,7 +50,7 @@ pub enum ReportCmd {
         about = "Key financial indicators (ROE / EPS / 毛利率 / 资产负债率 …)",
         after_long_help = "Examples:\n  \
                            sift report indicator 600519 --last 8\n  \
-                           sift report indicator 600519 --start 2020 --end 2024 --annual --items ROE,EPS,毛利率\n  \
+                           sift report indicator 600519 --start 2020 --end 2024 --annual --items ROE加权,EPS,毛利率\n  \
                            sift report indicator 600519 600036 --period 2024A --format tsv\n  \
                            sift report indicator 600519 --last 4 --source eastmoney\n\n\
                            Note: HK indicator is not yet implemented — for 00700 et al, use `report income/balance/cashflow` instead."
@@ -80,7 +80,7 @@ pub struct StatementArgs {
     pub period: Vec<Vec<Period>>,
 
     /// Most-recent N periods. Mutually exclusive with `--period`.
-    #[arg(long)]
+    #[arg(long, value_parser = parse_positive_usize, conflicts_with = "period")]
     pub last: Option<usize>,
 
     /// Range start year (`YYYY`); pairs with `--end` + `--annual`.
@@ -197,6 +197,19 @@ fn parse_period_token(s: &str) -> Result<Vec<Period>, String> {
     Period::parse(s).map(|p| vec![p]).map_err(|e| e.to_string())
 }
 
+/// clap value parser for `--last`: rejects 0 (which would silently
+/// query nothing and exit 0 with an empty table) the same way clap's
+/// other value rejections do — exit code 2 with an inline message.
+fn parse_positive_usize(s: &str) -> Result<usize, String> {
+    let n: usize = s
+        .parse()
+        .map_err(|e: std::num::ParseIntError| format!("invalid value {s:?}: {e}"))?;
+    if n == 0 {
+        return Err("value must be at least 1 (got 0)".into());
+    }
+    Ok(n)
+}
+
 /// Entry: dispatch the user's choice.
 pub fn run(cmd: ReportCmd, ctx: &ReportContext, fmt: Format) -> Result<(), SiftError> {
     match cmd {
@@ -219,6 +232,7 @@ fn run_statement(
     let unit: Unit = args.unit.into();
 
     validate_scope(scope, &symbols)?;
+    validate_not_index(&symbols)?;
 
     let source_name = args.source.as_source_tag().map(SourceTag::as_str);
     let mut all_rows = Vec::new();
@@ -243,11 +257,37 @@ fn run_statement(
 
     let keep = resolve_items(&args.items, stmt);
     let table = pivot(all_rows, keep.as_deref(), &names);
+    warn_unmatched_items(keep.as_deref(), &table);
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
     financial_render::render(&mut handle, &table, fmt)?;
     emit_unmapped_hint();
     Ok(())
+}
+
+/// Print a one-line `[warn]` for each `--items` entry that matched no
+/// column in the pivoted output — `--items` is an exact-match filter,
+/// so a typo / wrong alias otherwise degrades to a silently empty
+/// table with no feedback.
+fn warn_unmatched_items(keep: Option<&[String]>, table: &financial_render::PivotedTable) {
+    let Some(filter) = keep else { return };
+    let present: std::collections::HashSet<&str> = table
+        .blocks
+        .iter()
+        .flat_map(|b| b.items.iter().map(|(n, _)| n.as_str()))
+        .collect();
+    let missing: Vec<&str> = filter
+        .iter()
+        .map(String::as_str)
+        .filter(|i| !present.contains(i))
+        .collect();
+    if !missing.is_empty() {
+        eprintln!(
+            "[warn] --items 中有 {} 个科目未匹配（精确匹配；不带 --items 运行可先看全部列名）: {}",
+            missing.len(),
+            missing.join(", ")
+        );
+    }
 }
 
 fn parse_symbols(raw: &[String]) -> Result<Vec<Symbol>, SiftError> {
@@ -269,6 +309,19 @@ fn validate_scope(scope: Scope, symbols: &[Symbol]) -> Result<(), SiftError> {
                 bad.code, bad.market
             )));
         }
+    }
+    Ok(())
+}
+
+/// Indices are quote/bars-only instruments — no fundamentals upstream
+/// carries them. Fail fast with a pointer to the right command instead
+/// of surfacing a confusing per-source "unsupported" error.
+fn validate_not_index(symbols: &[Symbol]) -> Result<(), SiftError> {
+    if let Some(bad) = symbols.iter().find(|s| s.kind == InstrumentKind::Index) {
+        return Err(SiftError::NoApplicableSource(format!(
+            "index {} (`sift report` covers equities only; use `sift quote` / `sift bars`)",
+            bad.display_symbol()
+        )));
     }
     Ok(())
 }
@@ -364,6 +417,7 @@ fn emit_unmapped_hint() {
 
 fn run_periods(args: PeriodsArgs, ctx: &ReportContext, fmt: Format) -> Result<(), SiftError> {
     let sym = Symbol::parse(&args.symbol)?;
+    validate_not_index(std::slice::from_ref(&sym))?;
     let pinned = args.source.as_source_tag().map(SourceTag::as_str);
     let items = list_periods_union(&sym, ctx, pinned)?;
     let stdout = std::io::stdout();
@@ -394,6 +448,25 @@ fn run_periods(args: PeriodsArgs, ctx: &ReportContext, fmt: Format) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_positive_usize_rejects_zero_and_garbage() {
+        assert_eq!(parse_positive_usize("4").unwrap(), 4);
+        let err = parse_positive_usize("0").unwrap_err();
+        assert!(err.contains("at least 1"), "err: {err}");
+        assert!(parse_positive_usize("abc").is_err());
+    }
+
+    #[test]
+    fn last_conflicts_with_period_at_clap_level() {
+        use clap::Parser;
+        let res = crate::cli::Cli::try_parse_from([
+            "sift", "report", "income", "600519", "--last", "2", "--period", "2024Q3",
+        ]);
+        // clap usage error → exit code 2 (matches other arg conflicts).
+        let err = res.unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
 
     #[test]
     fn parse_period_token_handles_bare_year_and_iso_and_suffix() {
@@ -437,10 +510,30 @@ mod tests {
     }
 
     #[test]
+    fn validate_not_index_rejects_index_symbols() {
+        let idx = vec![Symbol {
+            code: "000001".into(),
+            market: Market::CnA,
+            kind: InstrumentKind::Index,
+        }];
+        let err = validate_not_index(&idx).unwrap_err();
+        assert!(matches!(err, SiftError::NoApplicableSource(_)));
+        assert!(err.to_string().contains("sh000001"), "msg: {err}");
+
+        let eq = vec![Symbol {
+            code: "600519".into(),
+            market: Market::CnA,
+            kind: InstrumentKind::Equity,
+        }];
+        validate_not_index(&eq).unwrap();
+    }
+
+    #[test]
     fn validate_scope_rejects_parent_for_hk() {
         let hk = vec![Symbol {
             code: "00700".into(),
             market: Market::Hk,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }];
         let err = validate_scope(Scope::Parent, &hk).unwrap_err();
         assert!(matches!(err, SiftError::NoApplicableSource(_)));
@@ -451,6 +544,7 @@ mod tests {
         let cn = vec![Symbol {
             code: "600519".into(),
             market: Market::CnA,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }];
         validate_scope(Scope::Parent, &cn).unwrap();
     }

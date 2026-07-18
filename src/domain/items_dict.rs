@@ -166,6 +166,14 @@ mod tests {
     }
 
     #[test]
+    fn shipped_dict_resolves_eps_alias() {
+        // `EPS` is the ticker-style alias users type most; it must
+        // land on the canonical 基本每股收益 entry.
+        let d = dict();
+        assert_eq!(d.lookup("EPS").map(|e| e.cn.as_str()), Some("基本每股收益"));
+    }
+
+    #[test]
     fn lookup_resolves_chinese_english_and_synonyms_to_same_entry() {
         let d = dict();
         let by_cn = d.lookup("归母净利润").expect("cn lookup");

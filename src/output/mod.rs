@@ -8,10 +8,15 @@ pub use render::{render, RenderRow};
 
 use crate::error::SiftError;
 
-/// Convert a [`std::io::Error`] into [`SiftError::Internal`] with a
-/// consistent prefix. Shared by every output module so `io: …`
-/// messages look the same everywhere.
+/// Convert a [`std::io::Error`] into the matching [`SiftError`]
+/// variant. EPIPE (downstream closed the pipe, e.g. `| head`) maps
+/// to [`SiftError::BrokenPipe`] so `main` can exit silently with 0;
+/// everything else becomes `Internal` with a consistent `io: ` prefix
+/// so messages look the same everywhere.
 pub(crate) fn io_err(e: std::io::Error) -> SiftError {
+    if e.kind() == std::io::ErrorKind::BrokenPipe {
+        return SiftError::BrokenPipe;
+    }
     SiftError::Internal(format!("io: {e}"))
 }
 
@@ -30,4 +35,24 @@ pub enum Format {
     Table,
     Tsv,
     Json,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn io_err_maps_broken_pipe_to_dedicated_variant() {
+        let e = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Broken pipe");
+        assert!(matches!(io_err(e), SiftError::BrokenPipe));
+    }
+
+    #[test]
+    fn io_err_keeps_other_kinds_as_internal_with_prefix() {
+        let e = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope");
+        match io_err(e) {
+            SiftError::Internal(m) => assert!(m.starts_with("io: "), "msg: {m}"),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
 }

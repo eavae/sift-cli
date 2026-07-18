@@ -187,6 +187,7 @@ mod tests {
             symbol: Symbol {
                 code: "600519".into(),
                 market: Market::CnA,
+                kind: crate::domain::market::InstrumentKind::Equity,
             },
             statement: Statement::Indicator,
             periods: vec![Period::Annual(2025)],
@@ -214,6 +215,7 @@ mod tests {
             symbol: Symbol {
                 code: "00700".into(),
                 market: Market::Hk,
+                kind: crate::domain::market::InstrumentKind::Equity,
             },
             statement: Statement::Indicator,
             periods: vec![Period::Annual(2024)],

@@ -4,7 +4,7 @@
 //!
 //! Coverage:
 //! - default `Table` format and TSV format produce the documented columns
-//! - `--format json` is soft-rejected with a user-facing message, exit 1
+//! - `--format json` emits one NDJSON object per row
 //! - multi-symbol partial failure: stdout stays clean, stderr warns
 //!   trail stdout, exit 0
 //! - multi-symbol all-failure: empty stdout, exit 3 (`AllSourcesFailed`)
@@ -78,24 +78,49 @@ fn tsv_format_uses_hash_prefix_header_and_tab_separator() {
 }
 
 #[test]
-fn json_format_is_soft_rejected_without_leaking_internal_codename() {
-    // `--format` is a global option, so clap will not reject `json`
-    // on the quote subcommand by itself; only the runtime check
-    // inside `run()` rejects it.
-    let out = Command::cargo_bin("sift")
-        .unwrap()
-        .args(["--format", "json", "quote", "600519"])
-        .output()
-        .expect("spawn sift");
-    // Exit code 1 (SiftError::Internal), not the clap-level 2.
-    assert_eq!(out.status.code(), Some(1));
-    let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(
-        stderr.contains("`sift quote`"),
-        "stderr must name the user-facing command: {stderr:?}",
-    );
-    assert!(stderr.contains("tsv"), "should mention supported format: {stderr:?}");
-    assert!(!stderr.contains("F5"), "must not leak internal codename: {stderr:?}");
+fn json_format_emits_ndjson_per_row() {
+    let mut server = Server::new();
+    let _m = server
+        .mock("GET", "/api/qt/stock/get")
+        .match_query(Matcher::Any)
+        .with_status(200)
+        .with_body(em_body("贵州茅台", "600519"))
+        .create();
+
+    let out = run_quote(&server, &["--format", "json", "--", "600519"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let parsed: Vec<serde_json::Value> = serde_json::Deserializer::from_slice(&out.stdout)
+        .into_iter::<serde_json::Value>()
+        .collect::<Result<_, _>>()
+        .expect("ndjson lines parse");
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0]["symbol"], "600519.CN-A");
+    assert_eq!(parsed[0]["name"], "贵州茅台");
+    assert_eq!(parsed[0]["price"], 1323.59);
+    // CN-A: f47 arrives in hands → ×100 shares.
+    assert_eq!(parsed[0]["volume"], 1_267_400);
+    assert_eq!(parsed[0]["source"], "eastmoney");
+}
+
+#[test]
+fn sh_index_routes_to_em_index_secid_and_displays_bare_form() {
+    // `sh000001` = 上证指数: EM secid 1.000001, symbol column shows
+    // the exchange-prefixed bare form (never `000001.CN-A` — that is
+    // 平安银行).
+    let mut server = Server::new();
+    let _m = server
+        .mock("GET", "/api/qt/stock/get")
+        .match_query(Matcher::UrlEncoded("secid".into(), "1.000001".into()))
+        .with_status(200)
+        .with_body(em_body("上证指数", "000001"))
+        .create();
+
+    let out = run_quote(&server, &["sh000001", "--format", "tsv"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let data = stdout.lines().nth(1).unwrap();
+    assert!(data.starts_with("sh000001\t"), "data row: {data:?}");
+    assert!(data.contains("上证指数"), "data row: {data:?}");
 }
 
 #[test]

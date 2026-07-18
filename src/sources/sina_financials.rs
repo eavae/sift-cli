@@ -304,6 +304,7 @@ mod tests {
         Symbol {
             code: code.into(),
             market: Market::CnA,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 
@@ -420,7 +421,8 @@ mod tests {
         assert!(!s.supports(&Query {
             symbol: Symbol {
                 code: "00700".into(),
-                market: Market::Hk
+                market: Market::Hk,
+                kind: crate::domain::market::InstrumentKind::Equity,
             },
             statement: Statement::Income,
             periods: vec![],
@@ -754,6 +756,7 @@ mod tests {
             symbol: Symbol {
                 code: "00700".into(),
                 market: Market::Hk,
+                kind: crate::domain::market::InstrumentKind::Equity,
             },
             statement: Statement::Income,
             periods: vec![Period::Annual(2024)],

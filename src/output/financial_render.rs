@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! [603259.SH  药明康德  scope=consolidated  currency=CNY  unit=raw]
-//! 财务指标       2026-03-31      2025-12-31      ...
+//! 利润表         2026-03-31      2025-12-31      ...
 //! 营业总收入     12,435,776,568  45,456,165,774  ...
 //! 营业收入       ...             ...             ...
 //! ...
@@ -35,6 +35,9 @@ use crate::output::Format;
 pub struct SymbolBlock {
     pub symbol: Symbol,
     pub name: String,
+    /// Which statement this block renders — drives the first-column
+    /// header of the table view (利润表 / 资产负债表 / …).
+    pub statement: Statement,
     pub scope: String,
     pub currency: String,
     pub unit: Unit,
@@ -76,6 +79,7 @@ pub fn pivot(
         let entry = accum.entry(r.symbol.code.clone()).or_insert_with(|| SymbolAccum {
             symbol: r.symbol.clone(),
             name: r.name.clone(),
+            statement: r.statement,
             scope: r.scope.as_str().into(),
             currency: r.currency.clone(),
             unit: r.unit,
@@ -146,6 +150,7 @@ pub fn pivot(
         blocks.push(SymbolBlock {
             symbol: acc.symbol,
             name,
+            statement: acc.statement,
             scope: acc.scope,
             currency: acc.currency,
             unit: acc.unit,
@@ -161,6 +166,9 @@ pub fn pivot(
 struct SymbolAccum {
     symbol: Symbol,
     name: String,
+    /// Statement of the first-seen row; all rows of one pivot run
+    /// share the same statement (the query is per-statement).
+    statement: Statement,
     scope: String,
     currency: String,
     unit: Unit,
@@ -221,8 +229,9 @@ fn render_table<W: Write>(out: &mut W, table: &PivotedTable) -> Result<(), SiftE
         .map_err(io_err)?;
 
         // Body table — pure financial-item rows; `_period_type` /
-        // `_source` have moved to the header line.
-        let mut headers: Vec<String> = vec!["财务指标".into()];
+        // `_source` have moved to the header line. The first-column
+        // header names the statement (利润表 / 资产负债表 / …).
+        let mut headers: Vec<String> = vec![block.statement.cn_label().to_string()];
         for p in &block.periods {
             headers.push(format_date(*p));
         }
@@ -457,10 +466,14 @@ fn format_number(v: f64, unit: Unit) -> String {
 // ---------------------------------------------------------------------------
 
 /// Apply `--unit` scaling. Cache always stores `Unit::Raw`; the
-/// command layer calls this just before rendering. Indicator rows
-/// (ratios such as ROE / 毛利率) are pre-percentages and are
+/// command layer calls this just before rendering. Two row kinds are
 /// **not** scaled — only the `unit` label updates so the column
-/// header still reflects the user's request.
+/// header still reflects the user's request:
+///
+/// - Indicator rows (ratios such as ROE / 毛利率) are pre-percentages.
+/// - Per-share items (name contains `每股` — 基本每股收益, 每股净资产,
+///   …) are already in 元/股; scaling them by 1e8/1e4 would round
+///   them to zero.
 pub fn apply_unit(rows: Vec<FinancialRow>, unit: Unit) -> Vec<FinancialRow> {
     if matches!(unit, Unit::Raw) {
         return rows;
@@ -468,7 +481,7 @@ pub fn apply_unit(rows: Vec<FinancialRow>, unit: Unit) -> Vec<FinancialRow> {
     let factor = unit.factor();
     rows.into_iter()
         .map(|mut r| {
-            if !matches!(r.statement, Statement::Indicator) {
+            if !matches!(r.statement, Statement::Indicator) && !r.item.contains("每股") {
                 r.value /= factor;
             }
             r.unit = unit;
@@ -507,6 +520,7 @@ mod tests {
             symbol: Symbol {
                 code: code.into(),
                 market,
+                kind: crate::domain::market::InstrumentKind::Equity,
             },
             name: name.into(),
             period,
@@ -622,8 +636,9 @@ mod tests {
         assert!(lines[1].contains("currency=CNY"));
         assert!(lines[1].contains("unit=raw"));
         assert!(lines[1].contains("source=eastmoney"));
-        // Line 2: column header for the body table.
-        assert!(lines[2].starts_with("财务指标"));
+        // Line 2: column header for the body table — the first column
+        // is named after the statement (fixture rows are Income).
+        assert!(lines[2].starts_with("利润表"));
         assert!(lines[2].contains("2024-12-31"));
         // Body rows: just the items, no `_period_type` / `_source`.
         assert!(s.contains("营业总收入"));
@@ -910,6 +925,50 @@ mod tests {
         render(&mut buf, &t, Format::Table).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("12345.68"), "table output:\n{s}");
+    }
+
+    #[test]
+    fn render_table_header_names_the_statement() {
+        for (stmt, want) in [
+            (Statement::Income, "利润表"),
+            (Statement::Balance, "资产负债表"),
+            (Statement::Cashflow, "现金流量表"),
+            (Statement::Indicator, "财务指标"),
+        ] {
+            let mut r = row(
+                "600519",
+                Market::CnA,
+                "茅台",
+                "营业总收入",
+                100.0,
+                d(2024, 12, 31),
+                SourceTag::EastMoney,
+            );
+            r.statement = stmt;
+            let t = pivot(vec![r], None, &empty_lookup());
+            let mut buf = Vec::<u8>::new();
+            render(&mut buf, &t, Format::Table).unwrap();
+            let s = String::from_utf8(buf).unwrap();
+            let header = s.lines().nth(2).unwrap();
+            assert!(header.starts_with(want), "{stmt:?}: header was {header:?}");
+        }
+    }
+
+    #[test]
+    fn apply_unit_skips_per_share_items() {
+        // 基本每股收益 is 元/股 — scaling by 1e8 would round it to 0.00.
+        let rows = vec![row(
+            "x",
+            Market::CnA,
+            "n",
+            "基本每股收益",
+            21.76,
+            d(2024, 12, 31),
+            SourceTag::EastMoney,
+        )];
+        let yi = apply_unit(rows, Unit::Yi);
+        assert_eq!(yi[0].value, 21.76);
+        assert_eq!(yi[0].unit, Unit::Yi);
     }
 
     #[test]

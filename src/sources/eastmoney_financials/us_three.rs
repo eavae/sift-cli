@@ -38,6 +38,7 @@ mod tests {
             symbol: Symbol {
                 code: "AAPL".into(),
                 market: Market::Us,
+                kind: crate::domain::market::InstrumentKind::Equity,
             },
             statement: Statement::Income,
             periods: vec![Period::Annual(2024)],

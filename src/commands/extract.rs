@@ -390,10 +390,10 @@ fn write_stdout(pages: &[String]) -> Result<(), SiftError> {
             continue;
         }
         if !first {
-            writeln!(out).map_err(|e| SiftError::Io(format!("stdout: {e}")))?;
+            writeln!(out).map_err(crate::output::io_err)?;
         }
         first = false;
-        writeln!(out, "{}", md).map_err(|e| SiftError::Io(format!("stdout: {e}")))?;
+        writeln!(out, "{}", md).map_err(crate::output::io_err)?;
     }
     Ok(())
 }

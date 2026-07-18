@@ -195,6 +195,7 @@ mod tests {
         Symbol {
             code: "600519".into(),
             market: Market::CnA,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 
@@ -202,6 +203,7 @@ mod tests {
         Symbol {
             code: "000001".into(),
             market: Market::CnA,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 
@@ -209,6 +211,7 @@ mod tests {
         Symbol {
             code: "601318".into(),
             market: Market::CnA,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 
@@ -216,6 +219,7 @@ mod tests {
         Symbol {
             code: "600030".into(),
             market: Market::CnA,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 

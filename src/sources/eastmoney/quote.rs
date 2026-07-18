@@ -16,11 +16,15 @@
 //!
 //! Unit conversions follow the README's "data source & protocol"
 //! field table: price-like fields `f43/f44/f45/f46/f60/f169` are
-//! divided by 100 (yuan); `f170` (pct change) is divided by 100 (%);
-//! `f47` (volume in "hands") is multiplied by 100 to get shares;
-//! `f48` is already in yuan and passes through unchanged; `f86` is a
-//! unix second count formatted as `YYYY-MM-DD HH:MM:SS` in
-//! Asia/Shanghai (see `format_em_ts` for why we hardcode +08:00).
+//! integer-scaled — ÷100 for CN A-share (2 decimals), ÷1000 for
+//! HK / US (3 decimals), see [`price_factor`]; `f170` (pct change)
+//! is always divided by 100 (%); `f47` (volume) is multiplied by
+//! 100 for CN A-share (reported in "hands") but passed through
+//! unchanged for HK / US (already a share count — see
+//! [`volume_factor`]); `f48` is already in yuan and passes through
+//! unchanged; `f86` is a unix second count formatted as
+//! `YYYY-MM-DD HH:MM:SS` in Asia/Shanghai (see `format_em_ts` for
+//! why we hardcode +08:00).
 //!
 //! There is **no business-level retry** above the dispatch layer.
 //! Transport timeouts and 5xx responses go through `HttpClient`'s
@@ -37,7 +41,7 @@ use crate::error::SiftError;
 use crate::http::HttpClient;
 use crate::sources::quote_source::QuoteSource;
 
-use super::{em_str_to_f64, em_str_to_i64, require_f64, secid};
+use super::{em_str_to_f64, em_str_to_i64, price_factor, require_f64, secid, volume_factor};
 
 /// Production EM quote base. Mockito tests inject a custom URL via
 /// `EmQuoteUrls::for_test`; end-to-end tests can also override
@@ -156,28 +160,30 @@ fn parse(bytes: &[u8], symbol: &Symbol) -> Result<QuoteRow, SiftError> {
         .ok_or_else(|| SiftError::NotFound(format!("{}.{}", symbol.code, symbol.market.as_upper())))?
         .to_string();
 
-    let scale = 100.0_f64;
+    let scale = price_factor(symbol.market);
     let price = require_f64(data, "f43")? / scale;
     let high = require_f64(data, "f44")? / scale;
     let low = require_f64(data, "f45")? / scale;
     let open = require_f64(data, "f46")? / scale;
     let prev_close = require_f64(data, "f60")? / scale;
 
-    // `f47` is the day's volume in "hands". EM usually returns it as
-    // an integer; per the README we always multiply by 100 to get
-    // shares.
+    // `f47` is the day's volume. For CN A-share it arrives in
+    // "hands" (1 hand = 100 shares) so we multiply by 100; for HK /
+    // US it is already a share count and passes through unscaled.
     let volume_hand = data
         .get("f47")
         .and_then(em_str_to_f64)
         .ok_or_else(|| SiftError::Parse("missing EM f47 (volume)".into()))?;
-    let volume = (volume_hand * 100.0) as i64;
+    let volume = (volume_hand * volume_factor(symbol.market)) as i64;
     let amount = data
         .get("f48")
         .and_then(em_str_to_f64)
         .ok_or_else(|| SiftError::Parse("missing EM f48 (amount)".into()))?;
 
     let change = require_f64(data, "f169")? / scale;
-    let pct_change = require_f64(data, "f170")? / scale;
+    // `f170` is percent with a fixed ×100 encoding in every market —
+    // it does not follow the price scale.
+    let pct_change = require_f64(data, "f170")? / 100.0;
 
     let ts = data
         .get("f86")
@@ -196,7 +202,7 @@ fn parse(bytes: &[u8], symbol: &Symbol) -> Result<QuoteRow, SiftError> {
             )));
         }
     }
-    let display_symbol = format!("{}.{}", symbol.code, symbol.market.as_upper());
+    let display_symbol = symbol.display_symbol();
 
     Ok(QuoteRow {
         symbol: display_symbol,
@@ -263,6 +269,7 @@ mod tests {
         Symbol {
             code: code.into(),
             market: mkt,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 
@@ -305,6 +312,21 @@ mod tests {
         assert!(row.time.len() >= 19, "time was {:?}", row.time);
         assert!(row.time.contains('-') && row.time.contains(':'));
         assert_eq!(row.source, "eastmoney");
+    }
+
+    #[test]
+    fn hk_volume_is_already_shares_not_hands() {
+        // Same wire body, but parsed as an HK symbol: `f47` must pass
+        // through unscaled (12674 shares, not 12674×100), and the
+        // price fields use the HK 3-decimal scale (132359 → 132.359,
+        // not 1323.59).
+        let body = em_body("腾讯控股").replace("\"f57\":\"600519\"", "\"f57\":\"00700\"");
+        let row = parse(body.as_bytes(), &sym("00700", Market::Hk)).unwrap();
+        assert_eq!(row.symbol, "00700.HK");
+        assert_eq!(row.volume, 12_674);
+        assert!((row.price - 132.359).abs() < 1e-6);
+        assert!((row.change - -0.71).abs() < 1e-6); // f169 follows the price scale (÷1000 for HK)
+        assert!((row.pct_change - -0.53).abs() < 1e-6); // f170 is always ÷100
     }
 
     #[test]

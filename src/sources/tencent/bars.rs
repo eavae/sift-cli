@@ -49,6 +49,7 @@
 use serde_json::Value;
 
 use crate::domain::bars::{Adjust, BarRow, BarsQuery, Period};
+use crate::domain::market::Market;
 use crate::error::SiftError;
 use crate::http::HttpClient;
 use crate::sources::bars_source::BarsSource;
@@ -190,7 +191,7 @@ fn parse(bytes: &[u8], q: &BarsQuery) -> Result<Vec<BarRow>, SiftError> {
         }
     };
 
-    let display_symbol = format!("{}.{}", q.symbol.code, q.symbol.market.as_upper());
+    let display_symbol = q.symbol.display_symbol();
     let mut rows: Vec<BarRow> = Vec::with_capacity(series.len());
     let mut prev_close: Option<f64> = None;
     for entry in series {
@@ -213,7 +214,9 @@ fn parse(bytes: &[u8], q: &BarsQuery) -> Result<Vec<BarRow>, SiftError> {
         let low = parse_num(&cols[4], "low")?;
         let volume_hand = parse_num(&cols[5], "volume")?;
 
-        let volume = (volume_hand * 100.0) as i64; // hands → shares
+        // Tencent reports CN A-share volume in hands (×100 → shares);
+        // HK / US volume is already a share count.
+        let volume = (volume_hand * volume_factor(q.symbol.market)) as i64;
         let amount = close * (volume as f64); // approximate, see module doc
 
         // Diff fields use the prior row's close. The very first row
@@ -247,6 +250,16 @@ fn parse(bytes: &[u8], q: &BarsQuery) -> Result<Vec<BarRow>, SiftError> {
         prev_close = Some(close);
     }
     Ok(rows)
+}
+
+/// Shares per upstream volume unit: Tencent reports CN A-share
+/// volume in "hands" (1 hand = 100 shares) but HK / US volume
+/// already in shares.
+fn volume_factor(market: Market) -> f64 {
+    match market {
+        Market::CnA => 100.0,
+        Market::Hk | Market::Us => 1.0,
+    }
 }
 
 fn parse_num(v: &Value, name: &str) -> Result<f64, SiftError> {
@@ -303,6 +316,7 @@ mod tests {
         Symbol {
             code: code.into(),
             market: Market::CnA,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 
@@ -310,6 +324,7 @@ mod tests {
         Symbol {
             code: code.into(),
             market: Market::Hk,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 
@@ -398,6 +413,8 @@ mod tests {
         assert!((r.close - 410.4).abs() < 1e-9);
         assert!((r.high - 421.2).abs() < 1e-9);
         assert!((r.low - 406.4).abs() < 1e-9);
+        // HK volume arrives in shares, not hands: passes through unscaled.
+        assert_eq!(r.volume, 20_856_154);
     }
 
     #[test]

@@ -339,6 +339,7 @@ impl StoredFinancialRow {
             symbol: Symbol {
                 code: self.symbol_code,
                 market: market_from_u8(self.symbol_market),
+                kind: crate::domain::market::InstrumentKind::Equity,
             },
             name: self.name,
             period: parse_iso_date(&self.period).unwrap_or_else(epoch_date),
@@ -568,6 +569,7 @@ mod tests {
             symbol: Symbol {
                 code: "600519".into(),
                 market: Market::CnA,
+                kind: crate::domain::market::InstrumentKind::Equity,
             },
             statement: Statement::Income,
             periods: vec![Period::Annual(2024)],
@@ -580,6 +582,7 @@ mod tests {
             symbol: Symbol {
                 code: marker_code.into(),
                 market: Market::CnA,
+                kind: crate::domain::market::InstrumentKind::Equity,
             },
             name: "test".into(),
             period: Date::from_calendar_date(2024, Month::December, 31).unwrap(),
@@ -785,6 +788,7 @@ mod tests {
         Symbol {
             code: "600519".into(),
             market: Market::CnA,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 
@@ -869,6 +873,7 @@ mod tests {
             symbol: Symbol {
                 code: "600519".into(),
                 market: Market::CnA,
+                kind: crate::domain::market::InstrumentKind::Equity,
             },
             name: "贵州茅台".into(),
             period: period_end,

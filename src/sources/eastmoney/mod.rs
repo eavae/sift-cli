@@ -28,7 +28,7 @@ pub mod quote;
 // types are still pub-visible through their modules for tests that
 // want to inject a custom base URL.
 
-use crate::domain::market::Market;
+use crate::domain::market::{InstrumentKind, Market};
 use crate::domain::Symbol;
 use crate::error::SiftError;
 
@@ -39,6 +39,10 @@ use crate::error::SiftError;
 ///   `900`)
 /// - `0` = Shenzhen / Beijing (everything else under `Market::CnA`)
 ///
+/// CN **indexes** share the same numeric namespaces: SH indexes live
+/// in the `000xxx` segment (`1.000001` = 上证指数), SZ indexes in
+/// `399xxx` (`0.399001` = 深证成指).
+///
 /// HK is always `116`; US is always `105` (NASDAQ — the first sift
 /// release does not split NYSE / AMEX). The US branch is currently dead
 /// code because `Symbol::parse` falls into `unreachable!()` for
@@ -48,13 +52,23 @@ pub(crate) fn secid(sym: &Symbol) -> String {
     let prefix = match sym.market {
         Market::Hk => "116",
         Market::Us => "105",
-        Market::CnA => {
-            if is_shanghai_code(&sym.code) {
-                "1"
-            } else {
-                "0"
+        Market::CnA => match sym.kind {
+            // SH indexes occupy 000xxx, SZ indexes 399xxx.
+            InstrumentKind::Index => {
+                if sym.code.starts_with("000") {
+                    "1"
+                } else {
+                    "0"
+                }
             }
-        }
+            InstrumentKind::Equity => {
+                if is_shanghai_code(&sym.code) {
+                    "1"
+                } else {
+                    "0"
+                }
+            }
+        },
     };
     format!("{prefix}.{}", sym.code)
 }
@@ -67,6 +81,27 @@ fn is_shanghai_code(code: &str) -> bool {
         code.get(..3),
         Some("600") | Some("601") | Some("603") | Some("605") | Some("688") | Some("689") | Some("900")
     )
+}
+
+/// Shares per upstream volume unit: EM reports CN A-share volume in
+/// "hands" (1 hand = 100 shares) but HK / US volume already in
+/// shares. Shared by the quote and kline adapters.
+pub(crate) fn volume_factor(market: Market) -> f64 {
+    match market {
+        Market::CnA => 100.0,
+        Market::Hk | Market::Us => 1.0,
+    }
+}
+
+/// Divisor for EM's integer-scaled price fields (`f43/f44/f45/f46/
+/// f60/f169`): CN A-share prices carry 2 decimals (×100), HK / US
+/// carry 3 (×1000). `f170` (pct change) is always ×100 regardless
+/// of market and does not use this.
+pub(crate) fn price_factor(market: Market) -> f64 {
+    match market {
+        Market::CnA => 100.0,
+        Market::Hk | Market::Us => 1000.0,
+    }
 }
 
 /// Safely coerce one of EM's stringified numbers (e.g. `"-"`, empty
@@ -118,6 +153,7 @@ mod tests {
         Symbol {
             code: code.into(),
             market: mkt,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 
@@ -131,6 +167,22 @@ mod tests {
         assert_eq!(secid(&sym("300750", Market::CnA)), "0.300750");
         assert_eq!(secid(&sym("200011", Market::CnA)), "0.200011"); // SZ B-share
         assert_eq!(secid(&sym("832000", Market::CnA)), "0.832000"); // Beijing
+    }
+
+    #[test]
+    fn secid_for_cn_indexes_uses_the_exchange_namespace() {
+        let sh_idx = Symbol {
+            code: "000001".into(),
+            market: Market::CnA,
+            kind: InstrumentKind::Index,
+        };
+        let sz_idx = Symbol {
+            code: "399001".into(),
+            market: Market::CnA,
+            kind: InstrumentKind::Index,
+        };
+        assert_eq!(secid(&sh_idx), "1.000001"); // 上证指数
+        assert_eq!(secid(&sz_idx), "0.399001"); // 深证成指
     }
 
     #[test]

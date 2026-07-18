@@ -20,7 +20,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 
-use time::Date;
+use time::{Date, OffsetDateTime};
 
 use super::{cninfo_base, ResolvedSymbol, ANNOUNCEMENT_PATH, PAGE_SIZE};
 use crate::domain::announcement::{lookup_by_key, AnnouncementRow};
@@ -35,9 +35,11 @@ use crate::http::HttpClient;
 /// the already-org-id-resolved list; `category` is a cninfo
 /// `category_*` key (`定期报告` aggregate fan-out happens at the
 /// command layer); `start` / `end` define an inclusive date range
-/// for the `seDate=YYYY-MM-DD~YYYY-MM-DD` parameter. `limit` is the
-/// user cap — the dispatcher walks as many pages as needed (or
-/// stops early when `hasMore=false`).
+/// for the `seDate=YYYY-MM-DD~YYYY-MM-DD` parameter. One-sided
+/// ranges are filled in at form-build time (missing end → today,
+/// missing start → all history) because cninfo rejects a bare `~`.
+/// `limit` is the user cap — the dispatcher walks as many pages as
+/// needed (or stops early when `hasMore=false`).
 #[derive(Debug, Clone)]
 pub struct AnnouncementQuery {
     pub symbols: Vec<ResolvedSymbol>,
@@ -331,9 +333,19 @@ fn build_form(
     if let Some(kw) = &q.keyword {
         form.push(("searchkey", kw.clone()));
     }
+    // `seDate` needs both endpoints to be well-formed: a trailing
+    // `~` makes cninfo return 0 rows and a leading `~` makes it 500.
+    // When the user gives only one side we fill the other — a missing
+    // end means "up to today", a missing start means "all history".
     if q.start.is_some() || q.end.is_some() {
-        let start_s = q.start.map(date_to_iso).unwrap_or_default();
-        let end_s = q.end.map(date_to_iso).unwrap_or_default();
+        let start_s = q
+            .start
+            .map(date_to_iso)
+            .unwrap_or_else(|| DEFAULT_RANGE_START.into());
+        let end_s = q
+            .end
+            .map(date_to_iso)
+            .unwrap_or_else(|| date_to_iso(OffsetDateTime::now_utc().date()));
         form.push(("seDate", format!("{start_s}~{end_s}")));
     }
     form
@@ -343,6 +355,11 @@ fn date_to_iso(d: Date) -> String {
     d.format(&time::format_description::well_known::Iso8601::DATE)
         .unwrap_or_default()
 }
+
+/// Filler for a missing `--start` when only `--end` (or a one-sided
+/// range) is given: cninfo's coverage starts around 2000, so
+/// 1990-01-01 effectively means "all history".
+const DEFAULT_RANGE_START: &str = "1990-01-01";
 
 #[derive(serde::Deserialize, Default)]
 struct RawResponse {
@@ -536,6 +553,40 @@ mod tests {
         assert_eq!(map["tabName"], "fulltext");
         assert_eq!(map["category"], "category_ndbg_szsh");
         assert_eq!(map["seDate"], "2024-01-01~2024-12-31");
+    }
+
+    #[test]
+    fn build_form_fills_missing_end_with_today() {
+        // One-sided `--start` must not emit a trailing `~` (cninfo
+        // silently returns 0 rows for that shape).
+        let q = AnnouncementQuery {
+            symbols: vec![maotai()],
+            category: None,
+            keyword: None,
+            start: Some(d(2024, 1, 1)),
+            end: None,
+            limit: 10,
+        };
+        let form = build_form("szse", "600519,gssh0600519", &q, 1);
+        let map: HashMap<&str, String> = form.into_iter().collect();
+        let today = date_to_iso(OffsetDateTime::now_utc().date());
+        assert_eq!(map["seDate"], format!("2024-01-01~{today}"));
+    }
+
+    #[test]
+    fn build_form_fills_missing_start_with_history_floor() {
+        // One-sided `--end` must not emit a leading `~` (cninfo 500s).
+        let q = AnnouncementQuery {
+            symbols: vec![maotai()],
+            category: None,
+            keyword: None,
+            start: None,
+            end: Some(d(2024, 12, 31)),
+            limit: 10,
+        };
+        let form = build_form("szse", "600519,gssh0600519", &q, 1);
+        let map: HashMap<&str, String> = form.into_iter().collect();
+        assert_eq!(map["seDate"], "1990-01-01~2024-12-31");
     }
 
     #[test]

@@ -11,10 +11,12 @@
 //! ```
 //!
 //! Each `klines[i]` is a comma-separated CSV string in **EM's
-//! original order**: `date, open, close, high, low, volume(hands),
-//! amount(yuan), amplitude%, pct_change%, change, turnover%` —
+//! original order**: `date, open, close, high, low, volume, amount(yuan),
+//! amplitude%, pct_change%, change, turnover%` —
 //! `open` is followed by `close`, not by `high`. sift reorders the
-//! output to standard OHLC (see [`crate::domain::bars`]).
+//! output to standard OHLC (see [`crate::domain::bars`]). `volume` is
+//! reported in "hands" for CN A-share (×100 → shares) but already in
+//! shares for HK / US (see [`volume_factor`]).
 //!
 //! `turnover_pct` is parsed off the wire (field 11) but **dropped**
 //! before producing [`BarRow`] — the unified bars schema does not
@@ -33,7 +35,7 @@ use crate::error::SiftError;
 use crate::http::HttpClient;
 use crate::sources::bars_source::BarsSource;
 
-use super::secid;
+use super::{secid, volume_factor};
 
 pub const DEFAULT_BARS_BASE: &str = "https://push2his.eastmoney.com";
 
@@ -190,13 +192,13 @@ fn parse(
         )));
     }
 
-    let display_symbol = format!("{}.{}", symbol.code, symbol.market.as_upper());
+    let display_symbol = symbol.display_symbol();
     let mut rows: Vec<BarRow> = Vec::with_capacity(klines.len());
     for entry in klines {
         let s = entry.as_str().ok_or_else(|| {
             SiftError::Parse(format!("EM kline entry not a string: {entry:?}"))
         })?;
-        rows.push(parse_one(s, &display_symbol, adjust, period)?);
+        rows.push(parse_one(s, &display_symbol, symbol.market, adjust, period)?);
     }
     Ok(rows)
 }
@@ -204,12 +206,13 @@ fn parse(
 fn parse_one(
     csv: &str,
     display_symbol: &str,
+    market: Market,
     adjust: Adjust,
     period: Period,
 ) -> Result<BarRow, SiftError> {
     // EM's raw order:
-    //   date, open, close, high, low, volume(hands), amount,
-    //   amplitude%, pct_change%, change, turnover%
+    //   date, open, close, high, low, volume(hands for CN-A, shares
+    //   for HK/US), amount, amplitude%, pct_change%, change, turnover%
     // We read all 11 fields then drop turnover% to match the
     // unified schema. amplitude_pct and the diff fields are kept
     // from native EM values.
@@ -239,7 +242,7 @@ fn parse_one(
         high,
         low,
         close,
-        volume: (volume_hand * 100.0) as i64, // hands → shares
+        volume: (volume_hand * volume_factor(market)) as i64, // hands → shares (CN-A only)
         amount,
         pct_change,
         change,
@@ -293,6 +296,7 @@ mod tests {
         Symbol {
             code: code.into(),
             market: Market::CnA,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 
@@ -300,6 +304,7 @@ mod tests {
         Symbol {
             code: code.into(),
             market: Market::Hk,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 
@@ -337,6 +342,16 @@ mod tests {
         assert_eq!(r.adjust, Adjust::None);
         assert_eq!(r.period, Period::Daily);
         assert_eq!(r.source, "eastmoney");
+    }
+
+    #[test]
+    fn hk_volume_is_already_shares_not_hands() {
+        // Same wire numbers as the CN-A case, but parsed as HK:
+        // volume=100 must stay 100 (EM reports HK volume in shares).
+        let body = em_body(&["2024-01-02,10,15,20,8,100,1000,1,50,5,0.1"]);
+        let rows = parse(body.as_bytes(), &hk("00700"), Adjust::None, Period::Daily).unwrap();
+        assert_eq!(rows[0].symbol, "00700.HK");
+        assert_eq!(rows[0].volume, 100);
     }
 
     #[test]

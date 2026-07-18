@@ -57,6 +57,17 @@ impl Statement {
             Self::Indicator => "indicator",
         }
     }
+
+    /// Chinese label used as the first-column header of the human
+    /// table view (`sift report income …` → `利润表` …).
+    pub fn cn_label(self) -> &'static str {
+        match self {
+            Self::Income => "利润表",
+            Self::Balance => "资产负债表",
+            Self::Cashflow => "现金流量表",
+            Self::Indicator => "财务指标",
+        }
+    }
 }
 
 impl FromStr for Statement {

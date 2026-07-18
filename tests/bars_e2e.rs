@@ -30,6 +30,13 @@ fn tencent_body_hk(key: &str, rows: &[&str]) -> String {
     )
 }
 
+fn tencent_body_sh_index(key: &str, rows: &[&str]) -> String {
+    let arr = rows.iter().map(|r| format!("[{r}]")).collect::<Vec<_>>().join(",");
+    format!(
+        r#"{{"code":0,"msg":"","data":{{"sh000001":{{"{key}":[{arr}]}}}}}}"#
+    )
+}
+
 fn run_bars(server: &ServerGuard, args: &[&str]) -> Output {
     Command::cargo_bin("sift")
         .unwrap()
@@ -149,16 +156,54 @@ fn monthly_period_hits_qfqmonth() {
 }
 
 #[test]
-fn json_format_is_soft_rejected_without_internal_codename() {
-    let out = Command::cargo_bin("sift")
-        .unwrap()
-        .args(["--format", "json", "bars", "600519"])
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(stderr.contains("`sift bars`"), "stderr: {stderr:?}");
-    assert!(!stderr.contains("F5"), "stderr leaks codename: {stderr:?}");
+fn sh_index_bars_fall_back_to_unadjusted_response_key() {
+    // Tencent serves index K-lines from the same fqkline endpoint but
+    // ignores the adjust parameter — the response key is the bare
+    // period token (`day`), which the parser's fallback chain covers.
+    let mut server = Server::new();
+    let m = server
+        .mock("GET", "/appstock/app/fqkline/get")
+        .match_query(Matcher::Regex("sh000001,day".into()))
+        .with_status(200)
+        .with_body(tencent_body_sh_index(
+            "day",
+            &[r#""2024-01-02","2900","2950","2960","2890","535281873""#],
+        ))
+        .expect(1)
+        .create();
+
+    let out = run_bars(&server, &["sh000001", "--limit", "1", "--format", "tsv"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    m.assert();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let data = stdout.lines().nth(1).unwrap();
+    assert!(data.starts_with("sh000001\t"), "data row: {data:?}");
+}
+
+#[test]
+fn json_format_emits_ndjson_per_bar() {
+    let mut server = Server::new();
+    let _m = server
+        .mock("GET", "/appstock/app/fqkline/get")
+        .match_query(Matcher::Any)
+        .with_status(200)
+        .with_body(tencent_body(
+            "qfqday",
+            &[r#""2024-01-02","10","15","20","8","100""#],
+        ))
+        .create();
+
+    let out = run_bars(&server, &["600519", "--limit", "1", "--format", "json"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let parsed: Vec<serde_json::Value> = serde_json::Deserializer::from_slice(&out.stdout)
+        .into_iter::<serde_json::Value>()
+        .collect::<Result<_, _>>()
+        .expect("ndjson lines parse");
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0]["symbol"], "600519.CN-A");
+    assert_eq!(parsed[0]["date"], "2024-01-02");
+    assert_eq!(parsed[0]["volume"], 10_000);
+    assert_eq!(parsed[0]["source"], "tencent");
 }
 
 #[test]

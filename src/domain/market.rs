@@ -39,6 +39,15 @@ impl Market {
     }
 }
 
+/// Equity vs. exchange index. Indices (`sh000001` / `sz399001`) are
+/// tradable lookups for `quote` / `bars` only; the fundamentals
+/// commands (report / announce / search) reject them up front.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InstrumentKind {
+    Equity,
+    Index,
+}
+
 /// CN A-share sub-boards. HK is intentionally a single bucket — cninfo
 /// does not separate Main / GEM and we do not want to invent the split.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

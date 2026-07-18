@@ -263,6 +263,7 @@ mod tests {
         Symbol {
             code: "00700".into(),
             market: Market::Hk,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 

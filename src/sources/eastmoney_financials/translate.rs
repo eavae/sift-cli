@@ -115,6 +115,12 @@ const A_META_COLS: &[&str] = &[
 /// columns. A later story can enable them as extra `FinancialRow`s.
 const A_YOY_SUFFIX: &str = "_YOY";
 
+/// QOQ (quarter-over-quarter) suffix — same treatment as `_YOY`:
+/// EM's parent-scope wide tables carry ~40 of these (`BASIC_EPS_QOQ`,
+/// `ABLE_OCI_QOQ`, …); they have no dictionary entries and would
+/// otherwise leak into the output verbatim.
+const A_QOQ_SUFFIX: &str = "_QOQ";
+
 /// Translate one A-share wide-table row (one `REPORT_DATE`) into many
 /// `FinancialRow`s. Returns `Err` only if the row is missing
 /// `REPORT_DATE` — every other field falls back to a sane default.
@@ -150,7 +156,7 @@ pub fn a_wide_to_rows(entry: &Map<String, Value>, q: &Query) -> Vec<FinancialRow
 
     let mut rows = Vec::new();
     for (key, value) in entry {
-        if is_metadata_col(key) || key.ends_with(A_YOY_SUFFIX) {
+        if is_metadata_col(key) || key.ends_with(A_YOY_SUFFIX) || key.ends_with(A_QOQ_SUFFIX) {
             continue;
         }
         let Some(num) = extract_number(value) else {
@@ -204,6 +210,7 @@ mod tests {
         Symbol {
             code: code.into(),
             market: Market::CnA,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 
@@ -234,12 +241,14 @@ mod tests {
         let hk = Symbol {
             code: "00700".into(),
             market: Market::Hk,
+            kind: crate::domain::market::InstrumentKind::Equity,
         };
         assert_eq!(secucode(&hk), "00700.HK");
 
         let us = Symbol {
             code: "AAPL".into(),
             market: Market::Us,
+            kind: crate::domain::market::InstrumentKind::Equity,
         };
         assert_eq!(secucode(&us), "AAPL.US");
     }
@@ -282,12 +291,13 @@ mod tests {
             "OPERATE_COST": 14892277571.0,
             "PARENT_NETPROFIT": 82320067102.0,
             "BASIC_EPS": 65.66,
+            "BASIC_EPS_QOQ": 3.2,
             "SOMETHING_NULL": serde_json::Value::Null
         });
         let entry = raw.as_object().unwrap();
         let rows = a_wide_to_rows(entry, &cn_a_query());
 
-        // 4 non-metadata, non-YOY, non-null fields → 4 rows.
+        // 4 non-metadata, non-YOY/QOQ, non-null fields → 4 rows.
         assert_eq!(rows.len(), 4, "rows: {rows:#?}");
 
         let row_by_item: std::collections::HashMap<String, &FinancialRow> =

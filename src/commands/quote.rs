@@ -1,15 +1,15 @@
 //! `sift quote <symbol>...` — current-price snapshot.
 //!
 //! The command does four things:
-//! 1. Soft-reject `--format json` with a user-facing message.
-//! 2. Serially call [`crate::fetch::quote::dispatch_named`] for
+//! 1. Serially call [`crate::fetch::quote::dispatch_named`] for
 //!    each symbol — the command does **not** import `sources::*`
 //!    directly; per-source URL building and parsing live behind
 //!    the [`crate::sources::quote_source::QuoteSource`] trait.
-//! 3. Render successful rows to stdout in one shot — the per-symbol
+//! 2. Render successful rows to stdout in one shot (table / TSV /
+//!    NDJSON all via [`output::render`]) — the per-symbol
 //!    loop deliberately writes **nothing** to stderr so data and
 //!    diagnostic output never interleave.
-//! 4. After stdout is fully written, emit `[warn] quote <symbol>:
+//! 3. After stdout is fully written, emit `[warn] quote <symbol>:
 //!    <cause>` lines for any per-symbol failure to stderr.
 //!
 //! If every symbol fails we do not write any stdout at all and
@@ -30,9 +30,11 @@ use crate::output::{self, Format};
 pub struct QuoteArgs {
     /// One or more symbols (6 digits for CN A-share, 5 digits for
     /// HK; forms like `600519`, `sh600519`, `600519.SH`,
-    /// `00700.HK` are all accepted). Multiple symbols are fetched
-    /// serially; per-symbol failure surfaces as a `[warn]` line on
-    /// stderr without aborting the run.
+    /// `00700.HK` are all accepted; indices use an explicit
+    /// exchange prefix — `sh000001` = 上证指数, `sz399001` =
+    /// 深证成指). Multiple symbols are fetched serially; per-symbol
+    /// failure surfaces as a `[warn]` line on stderr without
+    /// aborting the run.
     #[arg(required = true)]
     pub symbols: Vec<String>,
 }
@@ -44,14 +46,6 @@ pub struct QuoteArgs {
 const DEFAULT_QUOTE_SOURCE: &str = "eastmoney";
 
 pub fn run(args: QuoteArgs, ctx: &QuoteContext, fmt: Format) -> Result<(), SiftError> {
-    if fmt == Format::Json {
-        return Err(SiftError::Internal(
-            "`--format json` is not supported by `sift quote`; \
-             use `--format tsv` or omit `--format` for the default table"
-                .into(),
-        ));
-    }
-
     let mut rows = Vec::with_capacity(args.symbols.len());
     let mut failures: Vec<(String, String)> = Vec::new();
 
@@ -137,7 +131,9 @@ mod tests {
     }
 
     #[test]
-    fn json_format_is_soft_rejected_with_user_facing_message() {
+    fn json_format_is_accepted_and_renders_ndjson() {
+        // `--format json` goes through the generic RenderRow → NDJSON
+        // pipeline like every other command; run() must not reject it.
         let app = AppContext::default();
         let sources: Vec<Box<dyn QuoteSource>> = vec![Box::new(MockSource)];
         let ctx = QuoteContext {
@@ -147,12 +143,8 @@ mod tests {
         let args = QuoteArgs {
             symbols: vec!["600519".into()],
         };
-        let err = run(args, &ctx, Format::Json).unwrap_err();
-        let msg = err.to_string();
-        assert!(matches!(err, SiftError::Internal(_)));
-        assert!(msg.contains("`sift quote`"), "msg: {msg}");
-        assert!(!msg.contains("F5"), "msg leaks codename: {msg}");
-        assert!(msg.contains("tsv"));
+        let res = run(args, &ctx, Format::Json);
+        assert!(res.is_ok(), "json format should be accepted: {res:?}");
     }
 
     #[test]

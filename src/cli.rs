@@ -71,7 +71,7 @@ pub enum Command {
         after_long_help = "Examples:\n  \
                            sift report income 600519 --last 4 --unit yi\n  \
                            sift report balance 600519 600036 --period 2024A,2023A --scope parent --format tsv\n  \
-                           sift report indicator 600519 --start 2020 --end 2024 --annual --items ROE,EPS,毛利率\n  \
+                           sift report indicator 600519 --start 2020 --end 2024 --annual --items ROE加权,EPS,毛利率\n  \
                            sift report cashflow 600519 --period 2024Q3 --source eastmoney    # pin upstream for repro\n  \
                            sift report periods 600519                                        # what's available?"
     )]

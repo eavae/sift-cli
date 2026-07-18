@@ -83,6 +83,7 @@ mod tests {
         Symbol {
             code: "600519".into(),
             market: Market::CnA,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 

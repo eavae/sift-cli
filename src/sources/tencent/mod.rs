@@ -23,7 +23,7 @@ pub mod bars;
 // `bars::build()` to get a trait object. No re-exports at this
 // level — keeps the surface minimal.
 
-use crate::domain::market::Market;
+use crate::domain::market::{InstrumentKind, Market};
 use crate::domain::Symbol;
 
 /// Translate a [`Symbol`] into Tencent's symbol key. CN A-share
@@ -31,6 +31,10 @@ use crate::domain::Symbol;
 /// - SH: codes starting with 600/601/603/605/688/689/900
 /// - BJ: codes starting with 4 (43x), 8 (8xx) or 920
 /// - SZ: everything else
+///
+/// CN indexes map to the same `sh` / `sz` prefixes (`sh000001` =
+/// 上证指数, `sz399001` = 深证成指) — Tencent serves index K-lines
+/// from the same `fqkline` endpoint.
 ///
 /// Beijing (BJ) is exposed because Tencent does serve 北交所 quotes
 /// via `bj430000` style codes — keeping that future-proofed even
@@ -41,6 +45,11 @@ pub(crate) fn tencent_code(sym: &Symbol) -> String {
         Market::Hk => format!("hk{}", sym.code),
         Market::Us => format!("us.{}", sym.code),
         Market::CnA => {
+            if sym.kind == InstrumentKind::Index {
+                // SH indexes occupy 000xxx, SZ indexes 399xxx.
+                let prefix = if sym.code.starts_with("000") { "sh" } else { "sz" };
+                return format!("{prefix}{}", sym.code);
+            }
             let prefix = if is_shanghai_code(&sym.code) {
                 "sh"
             } else if is_beijing_code(&sym.code) {
@@ -93,6 +102,7 @@ mod tests {
         Symbol {
             code: code.into(),
             market: mkt,
+            kind: crate::domain::market::InstrumentKind::Equity,
         }
     }
 
@@ -113,6 +123,22 @@ mod tests {
         assert_eq!(tencent_code(&sym("430510", Market::CnA)), "bj430510");
         assert_eq!(tencent_code(&sym("870299", Market::CnA)), "bj870299");
         assert_eq!(tencent_code(&sym("920002", Market::CnA)), "bj920002");
+    }
+
+    #[test]
+    fn cn_index_codes_get_sh_or_sz_prefix() {
+        let sh_idx = Symbol {
+            code: "000001".into(),
+            market: Market::CnA,
+            kind: InstrumentKind::Index,
+        };
+        let sz_idx = Symbol {
+            code: "399001".into(),
+            market: Market::CnA,
+            kind: InstrumentKind::Index,
+        };
+        assert_eq!(tencent_code(&sh_idx), "sh000001"); // 上证指数
+        assert_eq!(tencent_code(&sz_idx), "sz399001"); // 深证成指
     }
 
     #[test]

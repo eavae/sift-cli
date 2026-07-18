@@ -1,22 +1,20 @@
 //! `sift bars <symbol>...` — historical K-line bars.
 //!
 //! The command does five things:
-//! 1. Soft-reject `--format json` with a user-facing message.
-//! 2. For each symbol build a [`BarsQuery`] and call
+//! 1. For each symbol build a [`BarsQuery`] and call
 //!    [`fetch::bars::dispatch_named`] — the command does **not**
 //!    import `sources::*` directly; source URL building, parsing,
 //!    and unit conversion all live behind the
 //!    [`crate::sources::bars_source::BarsSource`] trait.
-//! 3. If every symbol fails return `SiftError::AllSourcesFailed`
+//! 2. If every symbol fails return `SiftError::AllSourcesFailed`
 //!    (exit code 3); stdout stays untouched.
-//! 4. Otherwise dispatch on `fmt`:
+//! 3. Otherwise dispatch on `fmt`:
 //!    - `Table`: multi-symbol input renders grouped via
 //!      `output::bars::render_grouped`; single-symbol input renders
 //!      a plain long table.
-//!    - `Tsv`: always emits a flat long table through
-//!      `output::render`.
-//!    - `Json`: rejected at the entry — `unreachable!` here.
-//! 5. After stdout is fully written, drain collected failures to
+//!    - `Tsv` / `Json`: always emit the flat long form through
+//!      `output::render` (TSV rows / NDJSON objects).
+//! 4. After stdout is fully written, drain collected failures to
 //!    stderr so warns never interleave with data.
 
 use std::io::Write;
@@ -34,7 +32,9 @@ use crate::output::{self, Format};
 #[derive(Args, Debug)]
 pub struct BarsArgs {
     /// One or more symbols (6 digits for CN A-share, 5 digits for
-    /// HK; forms like `600519` or `00700.HK` are accepted).
+    /// HK; forms like `600519` or `00700.HK` are accepted; indices
+    /// use an explicit exchange prefix — `sh000001` = 上证指数,
+    /// `sz399001` = 深证成指).
     /// Multiple symbols are fetched serially; a per-symbol failure
     /// surfaces as a `[warn]` line on stderr without aborting the
     /// run.
@@ -134,14 +134,6 @@ impl SourceArg {
 }
 
 pub fn run(args: BarsArgs, ctx: &BarsContext, fmt: Format) -> Result<(), SiftError> {
-    if fmt == Format::Json {
-        return Err(SiftError::Internal(
-            "`--format json` is not supported by `sift bars`; \
-             use `--format tsv` or omit `--format` for the default table"
-                .into(),
-        ));
-    }
-
     let period: Period = args.period.into();
     let adjust: Adjust = args.adjust.into();
     let (start, end) = resolve_date_range(&args, period)?;
@@ -192,8 +184,7 @@ pub fn run(args: BarsArgs, ctx: &BarsContext, fmt: Format) -> Result<(), SiftErr
                     output::bars::render_grouped(&mut handle, &all_rows)?;
                 }
             }
-            Format::Tsv => output::render(&mut handle, fmt, &all_rows)?,
-            Format::Json => unreachable!("rejected at run entry"),
+            Format::Tsv | Format::Json => output::render(&mut handle, fmt, &all_rows)?,
         }
     }
 
@@ -361,18 +352,17 @@ mod tests {
     }
 
     #[test]
-    fn json_format_is_soft_rejected_with_user_facing_message() {
+    fn json_format_is_accepted_and_renders_ndjson() {
+        // `--format json` goes through the generic RenderRow → NDJSON
+        // pipeline like every other command; run() must not reject it.
         let app = AppContext::default();
         let sources: Vec<Box<dyn BarsSource>> = vec![Box::new(MockSource { name: "tencent" })];
         let ctx = BarsContext {
             app: &app,
             sources: &sources,
         };
-        let err = run(args(vec!["600519"]), &ctx, Format::Json).unwrap_err();
-        let msg = err.to_string();
-        assert!(matches!(err, SiftError::Internal(_)));
-        assert!(msg.contains("`sift bars`"), "msg: {msg}");
-        assert!(!msg.contains("F5"), "msg should not leak codename: {msg}");
+        let res = run(args(vec!["600519"]), &ctx, Format::Json);
+        assert!(res.is_ok(), "json format should be accepted: {res:?}");
     }
 
     #[test]

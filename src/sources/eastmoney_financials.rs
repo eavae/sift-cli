@@ -177,6 +177,7 @@ mod tests {
                     Market::Us => "AAPL".into(),
                 },
                 market,
+                kind: crate::domain::market::InstrumentKind::Equity,
             },
             statement,
             periods: vec![Period::Annual(2024)],

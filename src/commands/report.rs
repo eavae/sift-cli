@@ -81,6 +81,17 @@ pub struct StatementArgs {
     #[arg(long, value_parser = parse_positive_usize, conflicts_with = "period")]
     pub last: Option<usize>,
 
+    /// Most-recent N years, anchored on the latest filed period.
+    /// `--years 10 --annual` = last 10 annual reports; without
+    /// `--annual`, N years of Q1/H1/Q3/Annual. Mutually exclusive
+    /// with `--period` / `--last` / `--start` / `--end`.
+    #[arg(
+        long,
+        value_parser = parse_positive_usize,
+        conflicts_with_all = ["period", "last", "start", "end"]
+    )]
+    pub years: Option<usize>,
+
     /// Range start year (`YYYY`); pairs with `--end` + `--annual`.
     #[arg(long)]
     pub start: Option<i32>,
@@ -354,8 +365,9 @@ fn validate_indicator_market(stmt: Statement, symbols: &[Symbol]) -> Result<(), 
 
 /// Resolve which periods to query given the user's arg combinations.
 ///
-/// Precedence: `--period` > `--last` > `--start/--end + --annual` >
-/// default = most recent 8 periods (anchored on the calendar via
+/// Precedence: `--period` > `--last` > `--years` >
+/// `--start/--end + --annual` > default = most recent 8 periods
+/// (anchored on the calendar via
 /// [`crate::domain::period::most_recent_filed`]).
 fn resolve_periods(args: &StatementArgs, _stmt: Statement) -> Result<Vec<Period>, SiftError> {
     if !args.period.is_empty() {
@@ -365,24 +377,49 @@ fn resolve_periods(args: &StatementArgs, _stmt: Statement) -> Result<Vec<Period>
     if let Some(n) = args.last {
         return Ok(last_n_filed(today, n));
     }
+    if let Some(n) = args.years {
+        let anchor = anchor_year(today, args.annual);
+        return Ok(expand_year_range(anchor - (n as i32) + 1, anchor, args.annual));
+    }
     if let (Some(s), Some(e)) = (args.start, args.end) {
-        let mut out = Vec::new();
-        for y in s..=e {
-            if args.annual {
-                out.push(Period::Annual(y));
-            } else {
-                out.push(Period::Q1(y));
-                out.push(Period::H1(y));
-                out.push(Period::Q3(y));
-                out.push(Period::Annual(y));
-            }
-        }
-        return Ok(out);
+        return Ok(expand_year_range(s, e, args.annual));
     }
     // Bare `sift report income <symbol>` (no time arg) — show
     // the most recent 8 periods by default. Dense enough to spot
     // trends without paging.
     Ok(last_n_filed(today, 8))
+}
+
+/// Expand an inclusive year range into periods: one `Annual(y)` per
+/// year when `annual`, else the four standard ends per year. Shared by
+/// the `--start/--end` and `--years` branches of [`resolve_periods`].
+fn expand_year_range(start: i32, end: i32, annual: bool) -> Vec<Period> {
+    let mut out = Vec::new();
+    for y in start..=end {
+        if annual {
+            out.push(Period::Annual(y));
+        } else {
+            out.push(Period::Q1(y));
+            out.push(Period::H1(y));
+            out.push(Period::Q3(y));
+            out.push(Period::Annual(y));
+        }
+    }
+    out
+}
+
+/// The most-recent year to anchor `--years N` on. `annual` walks back
+/// from [`most_recent_filed`] to the latest year whose Annual is
+/// guaranteed filed (so `--years N --annual` never yields an empty
+/// trailing column); otherwise uses the latest filed period's year.
+fn anchor_year(today: time::Date, annual: bool) -> i32 {
+    let mut p = crate::domain::period::most_recent_filed(today);
+    if annual {
+        while p.period_type() != Some(crate::domain::PeriodType::Annual) {
+            p = p.previous();
+        }
+    }
+    p.end_date().year()
 }
 
 /// Resolve the `--items` filter into a list of item labels to keep.
@@ -459,6 +496,66 @@ mod tests {
         // clap usage error → exit code 2 (matches other arg conflicts).
         let err = res.unwrap_err();
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn expand_year_range_annual_vs_quarterly() {
+        assert_eq!(
+            expand_year_range(2023, 2025, true),
+            vec![Period::Annual(2023), Period::Annual(2024), Period::Annual(2025)]
+        );
+        let q = expand_year_range(2024, 2024, false);
+        assert_eq!(
+            q,
+            vec![
+                Period::Q1(2024),
+                Period::H1(2024),
+                Period::Q3(2024),
+                Period::Annual(2024)
+            ]
+        );
+    }
+
+    #[test]
+    fn anchor_year_annual_backs_off_to_latest_filed_annual() {
+        use time::Month;
+        let d = |y: i32, m: u8, day: u8| {
+            time::Date::from_calendar_date(y, Month::try_from(m).unwrap(), day).unwrap()
+        };
+        // May 2026: most_recent_filed = Q1(2026); annual anchor walks
+        // back to Annual(2025).
+        assert_eq!(anchor_year(d(2026, 5, 20), true), 2025);
+        assert_eq!(anchor_year(d(2026, 5, 20), false), 2026);
+        // Feb 2026 (Jan–Apr): most_recent_filed = Q3(2025) → annual
+        // anchor Annual(2024) (Annual(2025) not guaranteed filed).
+        assert_eq!(anchor_year(d(2026, 2, 10), true), 2024);
+    }
+
+    #[test]
+    fn years_conflicts_with_other_period_selectors_at_clap_level() {
+        use clap::Parser;
+        for other in [["--period", "2024A"], ["--last", "4"], ["--start", "2020"]] {
+            let res = crate::cli::Cli::try_parse_from(
+                ["sift", "report", "income", "600519", "--years", "3"]
+                    .into_iter()
+                    .chain(other),
+            );
+            let err = res.unwrap_err();
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "expected conflict with {other:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn years_zero_rejected_at_clap_level() {
+        use clap::Parser;
+        let res = crate::cli::Cli::try_parse_from([
+            "sift", "report", "income", "600519", "--years", "0",
+        ]);
+        assert!(res.is_err());
     }
 
     #[test]

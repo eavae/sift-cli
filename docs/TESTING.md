@@ -234,13 +234,17 @@
 | BUG-10 `--last 0` 静默空 | ✅ 已修 | `parse_positive_usize` 拒绝 0（exit 2） |
 | BUG-11 管道截断报错 | ✅ 已修 | `io_err` 将 EPIPE 映射为 `SiftError::BrokenPipe`→静默 exit 0 |
 | BUG-12 港股 quote 价格放大 10 倍 | ✅ 已修 | `price_factor(market)` 港股/美股 ÷1000 |
-| BUG-13 双重上市 H 股公告陈旧 | ⚠️ 上游限制 | cninfo 将 H 股公告挂在 A 股代码下，H 代码索引常年不更新；无可靠代码级修复，查公告走 A 股代码 |
-| BUG-14 港股公告 `--type` 失效 | ⚠️ 上游限制 | cninfo 未对港股公告分类（全为 250501），任何类型过滤对港股返回空 |
+| BUG-13 双重上市 H 股公告陈旧 | ✅ 已修 | **实为 sift 路由缺陷**：`column_groups` 按 `org_id` 前缀分列，而 H 股（招行 03968=`gssh0600036`、平安 02318=`9900002221`）复用 A 股/数字 orgId，被误路由到 `column=szse`（仅 3 条 2014 年旧数据）。改按 `market` 分列后走 `column=hke`，返回全量当期公告（03968 达 342 条、最新 2026-07） |
+| BUG-14 港股公告 `--type` 失效 | ⚠️ 上游限制（已缓解） | cninfo 未对港股公告分类（`columnId` 恒为 250501、`announcementType` 全同、`category` 过滤返回 0）；无法代码级修复，已在 `--type` + 港股标的时打 `[warn]` 提示改用 `--keyword` |
 | BUG-15 北交所旧代码行为不一致 | ✅ 已修 | EM「(已切换)」占位行在 quote 侧改判 `NotFound`（与 bars 一致，不再给 0.00 假价） |
-| BUG-16 港股财报 currency 空 | ⚠️ 上游限制 | EM 列报币种接口已下线（`code:9501`）；唯一在线币种字段（orgprofile）是**交易**币种港元，与 CNY 列报金额矛盾——填入反而错误，故保持留空 |
+| BUG-16 港股财报 currency 空 | ⚠️ 上游限制 | EM 列报币种接口已下线（`RPT_CUSTOM_HKSK_APPFN_CASHFLOW_SUMMARY` 全 source 变体均返 `code:9501`）；其余在线接口（orgprofile、MAININDICATOR）的 CURRENCY 恒为**交易**币种 HKD（连以 USD 列报的汇丰 00005 也标 HKD），与实际 CNY 列报金额矛盾——填入反而错误，故保持留空。待上游 summary 接口恢复即可零成本接回 |
 | BUG-17 港股 indicator 静默空表 | ✅ 已修 | 命令层 `validate_indicator_market` 拒绝非 A 股 indicator，指向 income/balance/cashflow |
 
-> ⚠️ 三项「上游限制」均为 cninfo / 东方财富 数据结构问题（H 股公告索引位置、港股公告不分类、港股列报币种接口下线），非 sift 逻辑缺陷；已在下方逐条保留原始描述。
+> ⚠️ 剩余两项「上游限制」（BUG-14 港股公告不分类、BUG-16 港股列报币种接口下线）为 cninfo / 东方财富 数据结构问题，非 sift 逻辑缺陷。
+>
+> 📌 **接口调研补充（2026-07-18）**：
+> - BUG-13 经真实接口比对确认为 sift 路由 bug 而非上游陈旧，已修复。
+> - BUG-17 的港股指标数据其实**可获取** —— `RPT_HKF10_FN_MAININDICATOR`（`source=F10`）返回 76 字段的完整港股指标（ROE_AVG / BASIC_EPS / GROSS_PROFIT_RATIO / DEBT_ASSET_RATIO …）。当前先以「明确报错」兜底；真正接通港股 indicator 需要一张 EM 列名→中文字典，属独立 feature story（非 bug 修复范畴）。
 
 ### 高严重度（港股数据失真，agent 结论级错误）
 

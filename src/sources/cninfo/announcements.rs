@@ -276,18 +276,24 @@ impl Default for Announcements {
 // ===========================================================================
 
 /// Plan the cninfo POSTs for a [`Announcements::query`] call: one
-/// `(column, stock_param)` per non-empty bucket. A-share symbols
-/// (`gssh*` / `gssz*` / `gfbj*` / `gsbj*`) all share `column=szse`;
-/// HK (`gshk*`) goes to `column=hke`. An empty `symbols` slice
-/// expands to both columns with empty stock parameters — cninfo
-/// accepts that as a whole-market scan when a date window is
-/// supplied.
+/// `(column, stock_param)` per non-empty bucket. A-share symbols go to
+/// `column=szse`; HK to `column=hke`. An empty `symbols` slice expands
+/// to both columns with empty stock parameters — cninfo accepts that
+/// as a whole-market scan when a date window is supplied.
+///
+/// The split keys on [`ResolvedSymbol::market`], **not** the `org_id`
+/// prefix. Dual-listed H-shares (招商银行 03968, 中国平安 02318)
+/// reuse the A-share / numeric orgId (`gssh0600036`, `9900002221`),
+/// so an `org_id.starts_with("gshk")` test misrouted them to `szse` —
+/// where cninfo only carries a handful of decade-old rows. The `hke`
+/// column, keyed by market, returns the full current filing history.
 fn column_groups(symbols: &[ResolvedSymbol]) -> Vec<(&'static str, String)> {
+    use crate::domain::market::Market;
     if symbols.is_empty() {
         return vec![("szse", String::new()), ("hke", String::new())];
     }
     let (hke, szse): (Vec<&ResolvedSymbol>, Vec<&ResolvedSymbol>) =
-        symbols.iter().partition(|s| s.org_id.starts_with("gshk"));
+        symbols.iter().partition(|s| s.market == Market::Hk);
     let mut groups: Vec<(&'static str, String)> = Vec::new();
     if !szse.is_empty() {
         groups.push(("szse", join_stock(&szse)));
@@ -511,6 +517,22 @@ mod tests {
         assert_eq!(groups[0].1, "600519,gssh0600519;000001,gssz0000001");
         assert_eq!(groups[1].0, "hke");
         assert_eq!(groups[1].1, "00700,gshk0000700");
+    }
+
+    #[test]
+    fn column_groups_routes_dual_listed_h_share_to_hke_by_market() {
+        // 招商银行 H (03968) reuses the A-share orgId `gssh0600036`, so
+        // an org_id-prefix test would misroute it to szse (where cninfo
+        // has only stale rows). Routing by market keeps it on hke.
+        let cmb_h = ResolvedSymbol {
+            code: "03968".into(),
+            org_id: "gssh0600036".into(), // NOT a gshk* prefix
+            market: Market::Hk,
+        };
+        let groups = column_groups(&[cmb_h]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, "hke");
+        assert_eq!(groups[0].1, "03968,gssh0600036");
     }
 
     #[test]

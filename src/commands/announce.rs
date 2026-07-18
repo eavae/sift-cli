@@ -330,6 +330,7 @@ fn validate_list_args(args: &ListArgs) -> Result<(), SiftError> {
 fn run_list(args: ListArgs, ctx: &AppContext, fmt: Format) -> Result<(), SiftError> {
     validate_list_args(&args)?;
     let symbols = resolve_all(ctx, &args.symbols)?;
+    warn_hk_type_filter(args.r#type.as_deref(), &symbols);
     let cat_keys = expand_categories(args.r#type.as_deref())?;
 
     let resolver = AnnounceResolver::new(ctx);
@@ -345,6 +346,23 @@ fn run_list(args: ListArgs, ctx: &AppContext, fmt: Format) -> Result<(), SiftErr
         // command.
         Format::Tsv => render_tabular(&mut handle, &announce_view::AnnouncementListTsvView(&all)),
         Format::Json => output::render(&mut handle, fmt, &all),
+    }
+}
+
+/// Warn (once) when `--type` is combined with an HK symbol. cninfo
+/// does not classify HK announcements — every HK row shares the board
+/// `columnId` 250501 and a single `announcementType`, so the
+/// `category` filter matches nothing and the result is silently empty.
+/// Point the user at `--keyword` (which does search HK titles) instead
+/// of letting them think the issuer simply filed nothing.
+fn warn_hk_type_filter(type_zh: Option<&str>, symbols: &[ResolvedSymbol]) {
+    use crate::domain::market::Market;
+    let Some(t) = type_zh else { return };
+    if symbols.iter().any(|s| s.market == Market::Hk) {
+        eprintln!(
+            "[warn] cninfo 未对港股公告分类，`--type {t}` 对港股标的通常返回空；\
+             港股请改用 `--keyword` 按标题检索"
+        );
     }
 }
 

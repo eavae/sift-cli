@@ -707,7 +707,7 @@ mod tests {
         let ctx = ReportContext { app: &app, sources: &srcs };
 
         let q = income_query(cn_a("600519"), vec![Period::Annual(2025)]);
-        let rows = dispatch_with_cache_named(&q, &ctx, Some("sina")).unwrap();
+        let rows = dispatch_with_cache_named(&q, &ctx, Some("sina"), false).unwrap();
 
         assert!(!rows.is_empty(), "expected sina rows");
         assert_eq!(rows[0].source, SourceTag::Sina);
@@ -746,7 +746,7 @@ mod tests {
         assert!(matches!(err, SiftError::AllSourcesFailed(_)), "got {err:?}");
 
         // Pinned path: sina still answers.
-        let rows = dispatch_with_cache_named(&q, &ctx, Some("sina")).unwrap();
+        let rows = dispatch_with_cache_named(&q, &ctx, Some("sina"), false).unwrap();
         assert_eq!(rows[0].source, SourceTag::Sina);
     }
 

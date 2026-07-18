@@ -52,45 +52,54 @@ pub struct ReportContext<'a> {
 /// only the missing periods go to HTTP. Returns the first source
 /// that completes successfully; all-`Err` yields
 /// [`SiftError::AllSourcesFailed`].
+/// Convenience wrapper for the auto, cached path. Production goes
+/// through [`dispatch_with_cache_named`] (it threads `--source` /
+/// `--no-cache`); this shorthand is used only by dispatch unit tests.
+#[cfg(test)]
 pub fn dispatch_with_cache(
     query: &Query,
     ctx: &ReportContext,
 ) -> Result<Vec<FinancialRow>, SiftError> {
-    // The auto race only includes sources that opt in via
-    // `auto_dispatch()`. sina opts out — its A-share item labels are
-    // Chinese while EM's are the raw English column codes, so letting
-    // both win nondeterministically would flip the field names run to
-    // run. sina stays reachable through `--source sina`
-    // (`dispatch_with_cache_named`), which ignores this filter.
-    let refs: Vec<&dyn FinancialSource> = ctx
-        .sources
-        .iter()
-        .filter(|b| b.auto_dispatch())
-        .map(|b| b.as_ref())
-        .collect();
-    dispatch_inner(query, ctx.app, &refs)
+    dispatch_with_cache_named(query, ctx, None, false)
 }
 
 /// Like [`dispatch_with_cache`] but restricted to a single named
-/// source. `name = None` falls back to the standard
-/// first-success-wins behavior. An unknown name surfaces as
-/// `NoApplicableSource` listing the registered sources.
+/// source and with an explicit cache-bypass flag. `name = None` keeps
+/// the standard auto race (only `auto_dispatch()` sources); an unknown
+/// name surfaces as `NoApplicableSource`. `no_cache = true` forces a
+/// refetch of every requested period (fresh results are still written
+/// back) — the `report --no-cache` escape hatch for the permanent TTL
+/// bucket / upstream restatements.
 pub fn dispatch_with_cache_named(
     query: &Query,
     ctx: &ReportContext,
     name: Option<&str>,
+    no_cache: bool,
 ) -> Result<Vec<FinancialRow>, SiftError> {
-    let Some(want) = name else {
-        return dispatch_with_cache(query, ctx);
+    let refs: Vec<&dyn FinancialSource> = match name {
+        // Auto race only includes sources that opt in via
+        // `auto_dispatch()`. sina opts out — its A-share item labels
+        // are Chinese while EM's are raw English codes, so racing both
+        // would flip field names run to run. `--source sina` (a pinned
+        // name below) still reaches it.
+        None => ctx
+            .sources
+            .iter()
+            .filter(|b| b.auto_dispatch())
+            .map(|b| b.as_ref())
+            .collect(),
+        Some(want) => {
+            let Some(src) = ctx.sources.iter().find(|s| s.name() == want) else {
+                let known: Vec<&str> = ctx.sources.iter().map(|s| s.name()).collect();
+                return Err(SiftError::NoApplicableSource(format!(
+                    "--source {want} not registered; known sources: {}",
+                    known.join(", ")
+                )));
+            };
+            vec![src.as_ref()]
+        }
     };
-    let Some(src) = ctx.sources.iter().find(|s| s.name() == want) else {
-        let known: Vec<&str> = ctx.sources.iter().map(|s| s.name()).collect();
-        return Err(SiftError::NoApplicableSource(format!(
-            "--source {want} not registered; known sources: {}",
-            known.join(", ")
-        )));
-    };
-    dispatch_inner(query, ctx.app, &[src.as_ref()])
+    dispatch_inner(query, ctx.app, &refs, no_cache)
 }
 
 /// Race a fixed slice of source references against the shared
@@ -101,6 +110,7 @@ fn dispatch_inner(
     query: &Query,
     app: &AppContext,
     sources: &[&dyn FinancialSource],
+    no_cache: bool,
 ) -> Result<Vec<FinancialRow>, SiftError> {
     let applicable: Vec<&dyn FinancialSource> = sources
         .iter()
@@ -127,7 +137,7 @@ fn dispatch_inner(
             let name = src.name();
             scope.spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    fetch_with_per_source_cache(src, query, app, today)
+                    fetch_with_per_source_cache(src, query, app, today, no_cache)
                 }))
                 .unwrap_or_else(|payload| {
                     Err(SiftError::Network(format!(
@@ -161,12 +171,17 @@ fn fetch_with_per_source_cache(
     q: &Query,
     app: &AppContext,
     today: Date,
+    no_cache: bool,
 ) -> Result<Vec<FinancialRow>, SiftError> {
     let source_tag = SourceTag::from_name(src.name()).unwrap_or(SourceTag::EastMoney);
     let mut cached: Vec<FinancialRow> = Vec::new();
     let mut miss_periods: Vec<Period> = Vec::new();
 
-    if let Some(cache) = app.records_cache.as_ref() {
+    // `--no-cache` treats every requested period as a miss (force
+    // refetch); results are still written back below.
+    if no_cache {
+        miss_periods.extend(q.periods.iter().copied());
+    } else if let Some(cache) = app.records_cache.as_ref() {
         for p in &q.periods {
             match financials_cache_get(cache, &q.symbol, q.statement, *p, q.scope, source_tag, today) {
                 Some(rows) => cached.extend(rows),
@@ -702,7 +717,7 @@ mod tests {
         let sources: Vec<Box<dyn FinancialSource>> = vec![Box::new(optout), Box::new(em)];
         let app = empty_app();
         let ctx = ReportContext { app: &app, sources: &sources };
-        let rows = dispatch_with_cache_named(&fixture_query(), &ctx, Some("optout")).unwrap();
+        let rows = dispatch_with_cache_named(&fixture_query(), &ctx, Some("optout"), false).unwrap();
         assert_eq!(rows[0].symbol.code, "PINNED");
     }
 
@@ -1042,6 +1057,56 @@ mod tests {
             date(2026, 5, 20),
         );
         assert!(got.is_none(), "stale Recent-bucket row must miss");
+    }
+
+    #[test]
+    fn no_cache_bypasses_fresh_hit_refetches_and_writes_back() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let tmp = TempDir::new().unwrap();
+        let cache = financials_cache(&tmp);
+        // Old-bucket row (>365d) → a normal read is always a fresh hit.
+        let period = date(2020, 12, 31);
+        let cached = fc_row(period, "OPERATE_INCOME", 100.0, SourceTag::EastMoney);
+        financials_cache_put(&cache, std::slice::from_ref(&cached), SourceTag::EastMoney, "eastmoney");
+
+        let app = AppContext {
+            http: HttpClient::new(),
+            file_cache: None,
+            records_cache: Some(cache),
+        };
+        let q = Query {
+            symbol: cached.symbol.clone(),
+            statement: Statement::Income,
+            periods: vec![Period::Annual(2020)],
+            scope: Scope::Consolidated,
+        };
+        let today = date(2026, 5, 20);
+
+        // Mock "eastmoney" source that counts fetches and returns 999.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let src = MockSource::new("eastmoney", |_| true, move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![fc_row(date(2020, 12, 31), "OPERATE_INCOME", 999.0, SourceTag::EastMoney)])
+        });
+
+        // no_cache=false → fresh cache hit, no fetch, returns cached 100.
+        let got = fetch_with_per_source_cache(&src, &q, &app, today, false).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "cached path must not fetch");
+        assert_eq!(got[0].value, 100.0);
+
+        // no_cache=true → bypass, fetch fires, returns fresh 999.
+        let got = fetch_with_per_source_cache(&src, &q, &app, today, true).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "no_cache must refetch");
+        assert_eq!(got[0].value, 999.0);
+
+        // Write-back: a subsequent normal read now sees the refreshed
+        // value without another fetch.
+        let got = fetch_with_per_source_cache(&src, &q, &app, today, false).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "refreshed value should be cached");
+        assert_eq!(got[0].value, 999.0);
     }
 
     #[test]

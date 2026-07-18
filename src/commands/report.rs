@@ -130,6 +130,13 @@ pub struct StatementArgs {
     /// quarter / seasonality analysis. `single` is flow-statement only.
     #[arg(long, value_enum, default_value_t = QModeArg::Cumulative)]
     pub qmode: QModeArg,
+
+    /// Bypass the per-period cache and refetch from upstream (fresh
+    /// rows are still written back). Use when a historical report was
+    /// restated — the permanent TTL bucket would otherwise keep
+    /// serving the old value.
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 /// Quarter reporting basis for `--qmode`.
@@ -281,7 +288,7 @@ fn run_statement(
             periods: fetch_periods.clone(),
             scope,
         };
-        let rows = dispatch_with_cache_named(&query, ctx, source_name)?;
+        let rows = dispatch_with_cache_named(&query, ctx, source_name, args.no_cache)?;
         all_rows.extend(rows);
     }
 

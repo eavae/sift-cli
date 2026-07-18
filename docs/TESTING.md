@@ -246,6 +246,29 @@
 > - BUG-13 经真实接口比对确认为 sift 路由 bug 而非上游陈旧，已修复。
 > - BUG-17 的港股指标数据其实**可获取** —— `RPT_HKF10_FN_MAININDICATOR`（`source=F10`）返回 76 字段的完整港股指标（ROE_AVG / BASIC_EPS / GROSS_PROFIT_RATIO / DEBT_ASSET_RATIO …）。当前先以「明确报错」兜底；真正接通港股 indicator 需要一张 EM 列名→中文字典，属独立 feature story（非 bug 修复范畴）。
 
+### 第二轮黑盒回归（2026-07-18，字典移除后）
+
+期间的一次产品决策：**移除中文项名字典**（`data/items.txt` + `domain/items_dict.rs`），财报科目名改为**原样输出上游字段**——A 股 EM 为英文列名（`TOTAL_OPERATE_INCOME`），港股 / sina 为各自中文原名；`--items` 按原始名精确过滤。为避免 EM(英文)/sina(中文) 在 first-success-wins 下字段名漂移，sina 退出自动竞速（`auto_dispatch()==false`），仅 `--source sina` 显式可达。这一并消除了原报告的 OBS-2（同一命令多次运行源可能不同）。
+
+黑盒复测（全新 `HOME`、清空 `records.duckdb`，driver=debug 二进制）——27 项断言全部通过：
+
+| 组 | 断言 | 结果 |
+|---|---|---|
+| 字段 | A 股默认=英文码 / 源恒为 eastmoney / `--source sina`=中文 / 港股=中文原名 / `--items` 精确匹配 / typo 触发 `[warn]` | ✅ 6/6 |
+| 指标 | A 股 indicator 正常；港股 indicator 明确报错（非静默空表） | ✅ 2/2 |
+| 指数 | `sh000001`=上证指数 / `sz399001`=深证成指 / report 拒绝指数 / `sz600519` 矛盾前缀报错 | ✅ 4/4 |
+| 行情 | quote·bars 接受 `--format json`；港股价格量级正确 | ✅ 3/3 |
+| 北交所 | 旧码 832566 报错(exit 3)；新码 920566 正常 | ✅ 2/2 |
+| 公告 | 双重上市 H 03968 更新至 2025+（原 2014）；港股 `--type` 告警；A 股 `--type` 正常 | ✅ 3/3 |
+| 校验 | `--last 0` 拒绝；`--last`+`--period` 冲突；管道截断静默 | ✅ 3/3 |
+| 基础 | search / periods / version | ✅ 4/4 |
+
+**头条场景复核**：
+- **多源一致性**：连跑 5 次 A 股财报，`_source` 全部 `eastmoney`（OBS-2 漂移已消除）。
+- **A/H 溢价场景**：招行 `600036=38.02 CNY` / `03968=47.08 HKD` → 比值 ≈ 1:1.24（真实溢价），不再是旧 BUG-12 的 `38:470 ≈ 1:12`。
+
+自动化：`cargo test` 503 passed / 0 failed，`cargo clippy --workspace --all-targets` 0 警告。
+
 ### 高严重度（港股数据失真，agent 结论级错误）
 
 **BUG-12（价格正确性）港股 quote 价格系字段放大 10 倍**

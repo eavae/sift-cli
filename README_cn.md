@@ -65,7 +65,7 @@ Agent 内部调用：
 
 ### 预编译二进制（推荐）
 
-一行命令搞定 —— 自动检测系统 + 架构，从 GitHub Releases 下载，丢到 `~/.local/bin`：
+一行命令搞定 —— 自动检测系统 + 架构，从 GitHub Releases 下载，安装到 `PATH` 里第一个可写目录（找不到则退回 `~/.local/bin`）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/eavae/sift-cli/main/scripts/install.sh | bash
@@ -74,12 +74,22 @@ curl -fsSL https://raw.githubusercontent.com/eavae/sift-cli/main/scripts/install
 可选环境变量：
 
 ```bash
-SIFT_VERSION=v0.1.0 \
+SIFT_VERSION=v0.2.0 \
 SIFT_INSTALL_DIR=/usr/local/bin \
   curl -fsSL https://raw.githubusercontent.com/eavae/sift-cli/main/scripts/install.sh | bash
 ```
 
-支持平台：`x86_64-unknown-linux-gnu`、`aarch64-unknown-linux-gnu`、`x86_64-apple-darwin`、`aarch64-apple-darwin`。脚本会自动校验 Release 附带的 SHA-256 校验和。
+支持平台：`x86_64-unknown-linux-gnu`、`aarch64-unknown-linux-gnu`、`aarch64-apple-darwin`、`x86_64-pc-windows-msvc`。脚本会自动校验 Release 附带的 SHA-256 校验和。
+
+**github.com 上不去时（如中国大陆）：** 脚本会自动检测 GitHub 不可达并改用公共镜像下载二进制。由于连脚本本身也是从 GitHub 拉的，把这一步也走镜像即可：
+
+```bash
+curl -fsSL https://cdn.gh-proxy.org/https://raw.githubusercontent.com/eavae/sift-cli/main/scripts/install.sh | bash
+```
+
+也可用 `SIFT_MIRROR` 显式指定：`auto`（默认）、`off`（只走直连）、或某个镜像地址（如 `SIFT_MIRROR=https://cdn.gh-proxy.org`）。
+
+**Windows**（`x86_64-pc-windows-msvc`）以 `.zip` 发布。在 **[Git Bash](https://git-scm.com/downloads) / MSYS2** 里跑同一条命令即可 —— 脚本会识别 Windows、下载 `.zip` 并安装 `sift.exe`。（想手动装也行：到 [Releases](https://github.com/eavae/sift-cli/releases) 页下载压缩包，解出 `sift.exe` 放进 `PATH`。）事实库位于 `%USERPROFILE%\.sift`（如 `C:\Users\you\.sift`）；设 `HOME` 可整体改路径。
 
 ### 源码编译（备选）
 

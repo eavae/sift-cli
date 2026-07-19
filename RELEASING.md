@@ -8,7 +8,7 @@ How to cut a new release. The whole flow is driven by GitHub Actions
 - Workflow has `permissions: contents: write`, so the default `GITHUB_TOKEN`
   is enough to create the release. No PAT needed.
 - ARM Linux runs on the free `ubuntu-24.04-arm` runner (public repos only).
-- Intel macOS uses `macos-13`; Apple Silicon uses `macos-latest`.
+- Apple Silicon macOS uses `macos-latest`; Windows uses `windows-latest`.
 
 ## Cutting a release
 
@@ -57,13 +57,15 @@ so the installer can verify it without a separate manifest.
 
 ## Targets currently built
 
-| Target | Runner |
-|---|---|
-| `x86_64-unknown-linux-gnu` | `ubuntu-latest` |
-| `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` |
-| `x86_64-apple-darwin` | `macos-13` |
-| `aarch64-apple-darwin` | `macos-latest` |
+| Target | Runner | Archive |
+|---|---|---|
+| `x86_64-unknown-linux-gnu` | `ubuntu-latest` | `.tar.gz` |
+| `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` | `.tar.gz` |
+| `aarch64-apple-darwin` | `macos-latest` | `.tar.gz` |
+| `x86_64-pc-windows-msvc` | `windows-latest` | `.zip` (holds `sift.exe`) |
 
-To add Windows or `musl` Linux later: extend the matrix in
-`.github/workflows/release.yml` and add the corresponding target to the
-detection block in `scripts/install.sh`.
+`scripts/install.sh` detects all four (Windows via Git Bash / MSYS2, which
+report `MINGW*`/`MSYS*`/`CYGWIN*` from `uname`). To add another target (e.g.
+`musl` Linux or Windows arm64): extend the matrix in
+`.github/workflows/release.yml` and add it to the detection block in
+`scripts/install.sh`.

@@ -65,7 +65,7 @@ Agent calls:
 
 ### Prebuilt binary (recommended)
 
-One-liner — auto-detects OS + arch, downloads from GitHub Releases, drops a single binary into `~/.local/bin`:
+One-liner — auto-detects OS + arch, downloads from GitHub Releases, and installs a single binary into the first writable directory on your `PATH` (falling back to `~/.local/bin`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/eavae/sift-cli/main/scripts/install.sh | bash
@@ -74,14 +74,22 @@ curl -fsSL https://raw.githubusercontent.com/eavae/sift-cli/main/scripts/install
 Optional env overrides:
 
 ```bash
-SIFT_VERSION=v0.1.0 \
+SIFT_VERSION=v0.2.0 \
 SIFT_INSTALL_DIR=/usr/local/bin \
   curl -fsSL https://raw.githubusercontent.com/eavae/sift-cli/main/scripts/install.sh | bash
 ```
 
-Supported targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. The script verifies the SHA-256 checksum that ships next to each archive.
+Supported targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`. The script verifies the SHA-256 checksum that ships next to each archive.
 
-**Windows** (`x86_64-pc-windows-msvc`) ships as a `.zip` on the same [Releases](https://github.com/eavae/sift-cli/releases) page — the bash one-liner above is unix-only. Download the archive, extract `sift.exe`, and put it on your `PATH`. The store lives at `%USERPROFILE%\.sift` (e.g. `C:\Users\you\.sift`); set `HOME` to override the whole tree.
+**Where `github.com` is blocked (e.g. mainland China):** the script auto-detects an unreachable GitHub and pulls the binary through a public mirror. Since fetching the script itself also goes through GitHub, route that through the mirror too:
+
+```bash
+curl -fsSL https://cdn.gh-proxy.org/https://raw.githubusercontent.com/eavae/sift-cli/main/scripts/install.sh | bash
+```
+
+Force the behavior with `SIFT_MIRROR`: `auto` (default), `off` (direct only), or a mirror URL (e.g. `SIFT_MIRROR=https://cdn.gh-proxy.org`).
+
+**Windows** (`x86_64-pc-windows-msvc`) ships as a `.zip`. Run the same one-liner **under [Git Bash](https://git-scm.com/downloads) / MSYS2** and it detects Windows, downloads the `.zip`, and installs `sift.exe` for you. (Prefer to do it by hand? Grab the archive from the [Releases](https://github.com/eavae/sift-cli/releases) page, extract `sift.exe`, and put it on your `PATH`.) The store lives at `%USERPROFILE%\.sift` (e.g. `C:\Users\you\.sift`); set `HOME` to override the whole tree.
 
 ### Build from source (fallback)
 

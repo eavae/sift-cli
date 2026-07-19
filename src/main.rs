@@ -102,7 +102,7 @@ fn open_records_cache(file_cache: Option<&FileCache>) -> Option<RecordCache> {
 /// is the warn-and-continue mode: `$HOME` unresolvable or the DuckDB
 /// open failed; every caller guards on the Option.
 fn open_fact_store() -> Option<store::FactStore> {
-    let home = match dirs::home_dir() {
+    let home = match cache::home_dir() {
         Some(h) => h,
         None => {
             eprintln!("[warn] disabling fact store: cannot resolve $HOME");

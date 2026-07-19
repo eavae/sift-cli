@@ -17,7 +17,10 @@ unicode-width = "0.2"
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 dirs = "6"
 time = { version = "0.3", features = ["formatting", "parsing"] }
-duckdb = { version = "1", features = ["bundled"] }
+# 1.10504 is the first libduckdb-sys that links the Windows system
+# libs DuckDB needs (ws2_32 / rstrtmgr / bcrypt); older versions fail
+# to link on *-pc-windows-* with undefined RmStartSession/… symbols.
+duckdb = { version = "1.10504", features = ["bundled"] }
 blake3 = "1"
 tabled = "0.20"
 pdf_oxide = { version = "0.3", default-features = false }

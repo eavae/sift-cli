@@ -35,6 +35,8 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - runner: macos-latest
             target: aarch64-apple-darwin
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
 
     steps:
       - name: Checkout
@@ -77,13 +79,29 @@ jobs:
           stage="$(mktemp -d)"
           mkdir -p "$stage/$name"
 
-          cp "target/${target}/release/sift" "$stage/$name/sift"
+          # Windows binaries carry a `.exe` suffix and ship as `.zip`;
+          # every other target is an extensionless binary in a `.tar.gz`.
+          ext=""
+          case "$target" in *windows*) ext=".exe" ;; esac
+
+          cp "target/${target}/release/sift${ext}" "$stage/$name/sift${ext}"
           cp README.md README_cn.md "$stage/$name/" 2>/dev/null || true
           # LICENSE is optional; only copy if present.
           [ -f LICENSE ] && cp LICENSE "$stage/$name/" || true
 
-          archive="${name}.tar.gz"
-          tar -C "$stage" -czf "$archive" "$name"
+          case "$target" in
+            *windows*)
+              archive="${name}.zip"
+              # 7z is preinstalled on the windows-latest runner; build the
+              # archive inside the stage dir, then move it into the workspace.
+              ( cd "$stage" && 7z a -tzip "$archive" "$name" >/dev/null )
+              mv "$stage/$archive" "$archive"
+              ;;
+            *)
+              archive="${name}.tar.gz"
+              tar -C "$stage" -czf "$archive" "$name"
+              ;;
+          esac
 
           # SHA-256 for the install script to verify against if it wants to.
           if command -v sha256sum >/dev/null 2>&1; then
@@ -125,7 +143,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          find dist -type f \( -name "*.tar.gz" -o -name "*.sha256" \) -exec mv {} out/ \;
+          find dist -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.sha256" \) -exec mv {} out/ \;
           ls -la out
 
       - name: Resolve tag
@@ -146,4 +164,5 @@ jobs:
           generate_release_notes: true
           files: |
             out/*.tar.gz
+            out/*.zip
             out/*.sha256

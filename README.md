@@ -81,6 +81,8 @@ SIFT_INSTALL_DIR=/usr/local/bin \
 
 Supported targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. The script verifies the SHA-256 checksum that ships next to each archive.
 
+**Windows** (`x86_64-pc-windows-msvc`) ships as a `.zip` on the same [Releases](https://github.com/eavae/sift-cli/releases) page — the bash one-liner above is unix-only. Download the archive, extract `sift.exe`, and put it on your `PATH`. The store lives at `%USERPROFILE%\.sift` (e.g. `C:\Users\you\.sift`); set `HOME` to override the whole tree.
+
 ### Build from source (fallback)
 
 If your platform isn't covered by the releases, or you want bleeding-edge `main`:
@@ -94,6 +96,8 @@ cargo build --release && cp target/release/sift ~/.local/bin/
 ```
 
 > First build ~3 min (DuckDB statically linked), incremental seconds. Requires Rust ≥ 1.95.
+
+On **Windows**, use the MSVC toolchain (`rustup default stable-x86_64-pc-windows-msvc`) plus the [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-studio-build-tools/) — the bundled DuckDB is C++ and needs a C++ compiler. Then `cargo build --release` produces `target\release\sift.exe`. (`install.sh` is bash-only; copy the `.exe` onto your `PATH` yourself.)
 
 ### Verify
 

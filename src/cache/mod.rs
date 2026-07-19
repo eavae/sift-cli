@@ -28,12 +28,27 @@ pub use crate::db::{with_duckdb, DuckAccess};
 /// 24 h.
 pub const CACHE_TTL_SEARCH_SECS: u64 = 24 * 3600;
 
+/// Resolve the user's home directory — the parent of the `.sift` tree.
+///
+/// `HOME` wins when set, then the OS default (`dirs::home_dir()` →
+/// `%USERPROFILE%` on Windows, passwd/`$HOME` on unix). On unix this is
+/// a no-op — `dirs` already reads `HOME` first — but on Windows `dirs`
+/// resolves the profile folder via the shell API and *ignores* `HOME`,
+/// so honoring it here is what lets integration tests (and power users)
+/// redirect the whole `~/.sift` tree with one env var on every platform.
+pub fn home_dir() -> Option<PathBuf> {
+    match std::env::var_os("HOME") {
+        Some(h) if !h.is_empty() => Some(PathBuf::from(h)),
+        _ => dirs::home_dir(),
+    }
+}
+
 /// Resolve `~/.sift/cache`. Production callers chain a per-source
 /// subdir (e.g. `.join("cninfo")`); tests bypass this entirely by
 /// using an isolated tempdir.
 pub fn cache_root() -> Result<PathBuf, SiftError> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| SiftError::Io("cannot resolve $HOME".into()))?;
+    let home =
+        home_dir().ok_or_else(|| SiftError::Io("cannot resolve $HOME".into()))?;
     Ok(home.join(".sift").join("cache"))
 }
 

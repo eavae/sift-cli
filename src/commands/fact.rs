@@ -37,7 +37,9 @@ pub struct FactSetArgs {
     /// Source tag. Defaults to `manual`.
     #[arg(long, default_value = "manual")]
     pub source: String,
-    /// Accumulation mode: cumulative / single / point / na.
+    /// Accumulation mode: cumulative / single / point / na. `single`
+    /// requires a quarterly period (q1/q2/q3/q4); the others require
+    /// annual/h1/q1/q3.
     #[arg(long, default_value = "na")]
     pub qmode: String,
     /// Consolidation scope: consolidated / parent / na.

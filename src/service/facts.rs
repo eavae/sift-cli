@@ -320,11 +320,13 @@ pub fn remove(app: &AppContext, r: &FactRef) -> Result<usize, SiftError> {
 /// Build a [`FactRow`] from a single CLI input (period literal form).
 pub fn row_from_input(inp: &FactInput) -> Result<FactRow, SiftError> {
     let (fiscal_year, period_type) = split_period(inp.period)?;
+    let qmode = parse_qmode(inp.qmode)?;
+    check_qmode_period(qmode, period_type).map_err(SiftError::Parse)?;
     Ok(FactRow {
         symbol: canonical_symbol(inp.symbol)?,
         fiscal_year,
         period_type,
-        qmode: parse_qmode(inp.qmode)?,
+        qmode,
         scope: parse_scope(inp.scope)?,
         raw_key: non_empty(inp.key, "key")?.to_string(),
         source: non_empty(inp.source, "source")?.to_string(),
@@ -367,6 +369,7 @@ impl FromTsvRow for FactRow {
             Some(s) => Some(parse_iso_date(s).map_err(|e| e.to_string())?),
             None => None,
         };
+        check_qmode_period(qmode, period_type)?;
         Ok(FactRow {
             symbol: canonical_symbol(symbol).map_err(|e| e.to_string())?,
             fiscal_year,
@@ -420,6 +423,42 @@ fn split_period(period: &str) -> Result<(i32, PeriodType), SiftError> {
 fn parse_qmode(s: &str) -> Result<QMode, SiftError> {
     s.parse::<QMode>()
         .map_err(|()| SiftError::Parse(format!("bad qmode {s:?} (cumulative/single/point/na)")))
+}
+
+/// Service-side mirror of the facts cross-column CHECK: `single` ⇒
+/// quarterly (q1/q2/q3/q4); every other qmode ⇒ annual/h1/q1/q3 (Q2/Q4
+/// have no cumulative/point form). Pre-checked here so an illegal
+/// combination gets a friendly message instead of DuckDB's raw
+/// `Constraint Error` text; the DuckDB CHECK stays as the backstop.
+/// Returns the reason string (callers wrap it: `SiftError::Parse` for
+/// the single-row form, the TSV parse-error channel for batches).
+fn check_qmode_period(qmode: QMode, pt: PeriodType) -> Result<(), String> {
+    let ok = if let QMode::Single = qmode {
+        matches!(
+            pt,
+            PeriodType::Q1 | PeriodType::Q2 | PeriodType::Q3 | PeriodType::Q4
+        )
+    } else {
+        matches!(
+            pt,
+            PeriodType::Annual | PeriodType::H1 | PeriodType::Q1 | PeriodType::Q3
+        )
+    };
+    if ok {
+        return Ok(());
+    }
+    Err(if let QMode::Single = qmode {
+        format!(
+            "qmode=single requires a quarterly period_type (q1/q2/q3/q4); got {}",
+            pt.as_str()
+        )
+    } else {
+        format!(
+            "qmode={} requires period_type annual/h1/q1/q3 (not q2/q4); got {}",
+            qmode.as_str(),
+            pt.as_str()
+        )
+    })
 }
 
 fn parse_scope(s: &str) -> Result<Scope, SiftError> {
@@ -485,6 +524,24 @@ mod tests {
         assert_eq!(syms[0].symbol, "600519.CN-A");
         assert_eq!(syms[0].name, "贵州茅台");
         assert_eq!(syms[1].symbol, "00700.HK");
+    }
+
+    #[test]
+    fn check_qmode_period_mirrors_cross_column_check() {
+        // single ⇒ quarterly ok; annual/h1 rejected.
+        assert!(check_qmode_period(QMode::Single, PeriodType::Q1).is_ok());
+        assert!(check_qmode_period(QMode::Single, PeriodType::Q4).is_ok());
+        assert!(check_qmode_period(QMode::Single, PeriodType::Annual).is_err());
+        assert!(check_qmode_period(QMode::Single, PeriodType::H1).is_err());
+        // non-single ⇒ annual/h1/q1/q3 ok; q2/q4 rejected.
+        assert!(check_qmode_period(QMode::Cumulative, PeriodType::Annual).is_ok());
+        assert!(check_qmode_period(QMode::Point, PeriodType::Q3).is_ok());
+        assert!(check_qmode_period(QMode::Na, PeriodType::H1).is_ok());
+        assert!(check_qmode_period(QMode::Cumulative, PeriodType::Q2).is_err());
+        assert!(check_qmode_period(QMode::Point, PeriodType::Q4).is_err());
+        // Message names the offending period_type.
+        let msg = check_qmode_period(QMode::Single, PeriodType::Annual).unwrap_err();
+        assert!(msg.contains("annual"), "{msg}");
     }
 
     #[test]

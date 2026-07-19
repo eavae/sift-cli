@@ -573,22 +573,23 @@ fn write_facts_prepared(
     let mut fct = conn.prepare(FACT_INSERT_SQL).map_err(io)?;
     let mut out = BatchOutcome::default();
     for (i, r) in rows.iter().enumerate() {
+        // `write_one_fact` returns the bare DuckDB message; we add the
+        // `row N:` context exactly once here (no double `io error:`
+        // wrapping).
         match write_one_fact(&mut fct, r, now) {
             Ok(()) => out.written += 1,
             Err(e) if atomic => return Err(SiftError::Io(format!("row {}: {e}", i + 1))),
-            Err(e) => out.skipped.push((i + 1, format!("{e}"))),
+            Err(e) => out.skipped.push((i + 1, e)),
         }
     }
     Ok(out)
 }
 
 /// Insert one fact via a prepared statement. The `symbols` row it
-/// references is seeded separately by [`write_symbols`].
-fn write_one_fact(
-    fct: &mut duckdb::Statement,
-    r: &FactRow,
-    now: &str,
-) -> Result<(), SiftError> {
+/// references is seeded separately by [`write_symbols`]. Returns the
+/// raw DuckDB error message on failure so the caller owns the `row N:`
+/// framing.
+fn write_one_fact(fct: &mut duckdb::Statement, r: &FactRow, now: &str) -> Result<(), String> {
     let publish = r.publish_date.map(fmt_date);
     fct.execute(duckdb::params![
         r.symbol,
@@ -603,7 +604,7 @@ fn write_one_fact(
         publish,
         now,
     ])
-    .map_err(io)?;
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

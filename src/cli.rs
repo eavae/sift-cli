@@ -181,6 +181,10 @@ pub enum Command {
                            sift fact rm --symbol 600519.CN-A --period 2024A --key employee_comp\n\n\
                            Values are stored raw (unscaled); period is split into fiscal_year + period_type. \
                            Omitted TSV columns default to source=manual, scope=na, qmode=na.\n\n\
+                           qmode vs period: qmode=single needs a quarterly period (q1/q2/q3/q4); \
+                           every other qmode (cumulative/point/na) needs annual/h1/q1/q3 — q2/q4 have no \
+                           cumulative form. Note the `--period` literal folds Q2→H1 and Q4→annual, so a \
+                           single-quarter Q2/Q4 fact can only be written via a TSV batch with period_type=q2/q4.\n\n\
                            See also:\n  \
                            sift sql \"SELECT * FROM v_facts WHERE source='manual'\"   Read back what you wrote\n  \
                            sift metric add employee_comp --unit-kind amount        Register a std_key for a custom fact"

@@ -16,7 +16,7 @@ use crate::domain::symbol::Symbol;
 use crate::error::SiftError;
 use crate::service::store;
 use crate::service::tsv::{self, col, FromTsvRow};
-use crate::store::{FactKey, FactRow, QMode, Scope};
+use crate::store::{FactKey, FactRow, QMode, Scope, SymbolName};
 // Command-facing result types are surfaced through the service layer
 // so `commands/` never names `crate::store` directly (three-layer
 // discipline; see f6 README grep).
@@ -61,9 +61,14 @@ pub fn execute(app: &AppContext, sql: &str) -> Result<SqlOutcome, SiftError> {
 
 // ---- write paths ----------------------------------------------------------
 
-/// Ingest already-built rows (used by story-02/04 producers too).
-pub fn ingest(app: &AppContext, rows: &[FactRow], atomic: bool) -> Result<BatchOutcome, SiftError> {
-    store(app)?.upsert_facts(rows, atomic)
+/// Ingest already-built rows with their resolved symbol dimension.
+pub fn ingest(
+    app: &AppContext,
+    syms: &[SymbolName],
+    rows: &[FactRow],
+    atomic: bool,
+) -> Result<BatchOutcome, SiftError> {
+    store(app)?.upsert_facts(syms, rows, atomic)
 }
 
 /// Map one `report` row to a [`FactRow`]. `qmode` is derived from the
@@ -98,8 +103,27 @@ pub fn fact_row_from(r: &FinancialRow, single: bool) -> FactRow {
         value: r.value,
         currency: non_blank(&r.currency),
         publish_date: r.publish_date,
-        name: non_blank(&r.name),
     }
+}
+
+/// Collect the distinct `(symbol, name)` dimension entries a producer
+/// already knows (`report` / `market` carry the name on every row).
+/// Rows with a blank name contribute no entry — the symbol still gets
+/// a bare stub from the store only if it is otherwise absent.
+fn syms_from<'a>(pairs: impl Iterator<Item = (String, &'a str)>) -> Vec<SymbolName> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (symbol, name) in pairs {
+        let name = name.trim();
+        if name.is_empty() || !seen.insert(symbol.clone()) {
+            continue;
+        }
+        out.push(SymbolName {
+            symbol,
+            name: name.to_string(),
+        });
+    }
+    out
 }
 
 /// Best-effort ingest of a statement's raw rows. `Ok(None)` means the
@@ -114,8 +138,9 @@ pub fn ingest_statement(
     let Some(st) = app.facts.as_ref() else {
         return Ok(None);
     };
+    let syms = syms_from(rows.iter().map(|r| (r.symbol.display_symbol(), r.name.as_str())));
     let facts: Vec<FactRow> = rows.iter().map(|r| fact_row_from(r, single)).collect();
-    st.upsert_facts(&facts, true).map(Some)
+    st.upsert_facts(&syms, &facts, true).map(Some)
 }
 
 fn non_blank(s: &str) -> Option<String> {
@@ -136,7 +161,6 @@ pub fn market_facts(
     let mut out = Vec::new();
     for r in rows {
         let symbol = format!("{}.CN-A", r.code);
-        let name = (!r.name.is_empty()).then(|| r.name.clone());
         let publish_date = r.notice_date.as_deref().and_then(|s| parse_iso_date(s).ok());
         for (key, value) in &r.metrics {
             let qmode = if AMOUNT_COLS.contains(&key.as_str()) {
@@ -155,7 +179,6 @@ pub fn market_facts(
                 value: *value,
                 currency: None,
                 publish_date,
-                name: name.clone(),
             });
         }
     }
@@ -173,8 +196,9 @@ pub fn ingest_market(
     let Some(st) = app.facts.as_ref() else {
         return Ok(None);
     };
+    let syms = syms_from(rows.iter().map(|r| (format!("{}.CN-A", r.code), r.name.as_str())));
     let facts = market_facts(rows, fiscal_year, period_type);
-    let written = st.upsert_facts_bulk(&facts)?;
+    let written = st.upsert_facts_bulk(&syms, &facts)?;
     Ok(Some(BatchOutcome {
         written,
         skipped: Vec::new(),
@@ -191,18 +215,92 @@ pub fn ingest_tsv(app: &AppContext, input: &str, atomic: bool) -> Result<BatchOu
             return Err(SiftError::Parse(format!("line {line}: {why}")));
         }
     }
-    let mut out = store(app)?.upsert_facts(&rows, atomic)?;
-    if !atomic && !parse_errs.is_empty() {
+    // Resolve + validate every distinct symbol against the listing.
+    // In atomic mode an unresolvable symbol aborts the batch; in skip
+    // mode its rows are dropped and recorded in `skipped`.
+    let (syms, bad) = resolve_row_symbols(app, &rows);
+    if atomic {
+        if let Some((_symbol, why)) = bad.iter().next() {
+            // `why` already names the offending code.
+            return Err(SiftError::Parse(why.clone()));
+        }
+    }
+    let kept: Vec<FactRow> = rows
+        .iter()
+        .filter(|r| !bad.contains_key(&r.symbol))
+        .cloned()
+        .collect();
+    let mut out = store(app)?.upsert_facts(&syms, &kept, atomic)?;
+    if !atomic {
+        for (i, r) in rows.iter().enumerate() {
+            if let Some(why) = bad.get(&r.symbol) {
+                out.skipped.push((i + 1, why.clone()));
+            }
+        }
         out.skipped.extend(parse_errs);
         out.skipped.sort_by_key(|(i, _)| *i);
     }
     Ok(out)
 }
 
-/// Ingest one fact from CLI args.
+/// Ingest one fact from CLI args. The symbol is resolved + validated
+/// against the cninfo listing (rejecting anything not listed) — this
+/// is where the real `symbols.name` comes from for manual entries.
 pub fn set_one(app: &AppContext, inp: &FactInput) -> Result<BatchOutcome, SiftError> {
     let row = row_from_input(inp)?;
-    ingest(app, &[row], true)
+    let sym = resolve_symbol(app, &row.symbol)?;
+    ingest(app, &[sym], &[row], true)
+}
+
+/// Resolve + validate one canonical symbol against the cninfo listing,
+/// returning the real name. Strict: a code absent from the listing is
+/// rejected ([`SiftError::MissingOrgId`]). The market suffix must match
+/// what the listing says (`00700.CN-A` → rejected: 00700 is HK).
+fn resolve_symbol(app: &AppContext, canonical: &str) -> Result<SymbolName, SiftError> {
+    let (code, suffix) = canonical
+        .rsplit_once('.')
+        .ok_or_else(|| SiftError::Parse(format!("symbol {canonical:?} lacks a .MARKET suffix")))?;
+    let resolved = crate::fetch::search::resolve_org_id(app, code)?;
+    let want = resolved.market.as_upper();
+    if suffix != want {
+        return Err(SiftError::Parse(format!(
+            "symbol {canonical:?}: code {code} is a {want} listing, not {suffix}"
+        )));
+    }
+    let name = crate::fetch::search::cached_names(app)
+        .remove(code)
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| canonical.to_string());
+    Ok(SymbolName {
+        symbol: canonical.to_string(),
+        name,
+    })
+}
+
+/// Resolve every distinct symbol in `rows`. Returns the resolved
+/// dimension entries plus a `symbol → reason` map for the ones that
+/// failed validation (never errors itself — the caller decides
+/// abort-vs-skip). Each distinct code is resolved once; the first
+/// cache-cold lookup warms the whole listing.
+fn resolve_row_symbols(
+    app: &AppContext,
+    rows: &[FactRow],
+) -> (Vec<SymbolName>, std::collections::HashMap<String, String>) {
+    let mut syms = Vec::new();
+    let mut bad = std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for r in rows {
+        if !seen.insert(r.symbol.clone()) {
+            continue;
+        }
+        match resolve_symbol(app, &r.symbol) {
+            Ok(s) => syms.push(s),
+            Err(e) => {
+                bad.insert(r.symbol.clone(), format!("{e}"));
+            }
+        }
+    }
+    (syms, bad)
 }
 
 /// Remove one fact by its key.
@@ -236,7 +334,6 @@ pub fn row_from_input(inp: &FactInput) -> Result<FactRow, SiftError> {
             .publish_date
             .map(parse_iso_date)
             .transpose()?,
-        name: None,
     })
 }
 
@@ -281,7 +378,6 @@ impl FromTsvRow for FactRow {
             value,
             currency: currency.map(|s| s.to_string()),
             publish_date,
-            name: None,
         })
     }
 }
@@ -377,6 +473,21 @@ mod tests {
     }
 
     #[test]
+    fn syms_from_dedups_and_skips_blank_names() {
+        let pairs = [
+            ("600519.CN-A".to_string(), "贵州茅台"),
+            ("600519.CN-A".to_string(), "贵州茅台"), // dup symbol → one entry
+            ("000001.CN-A".to_string(), "  "),       // blank name → skipped
+            ("00700.HK".to_string(), "腾讯控股"),
+        ];
+        let syms = syms_from(pairs.into_iter());
+        assert_eq!(syms.len(), 2);
+        assert_eq!(syms[0].symbol, "600519.CN-A");
+        assert_eq!(syms[0].name, "贵州茅台");
+        assert_eq!(syms[1].symbol, "00700.HK");
+    }
+
+    #[test]
     fn split_period_maps_literals() {
         assert_eq!(split_period("2024A").unwrap(), (2024, PeriodType::Annual));
         assert_eq!(split_period("2024Q3").unwrap(), (2024, PeriodType::Q3));
@@ -436,7 +547,6 @@ mod tests {
         assert_eq!(f.source, "eastmoney");
         assert_eq!(f.value, 42.0);
         assert_eq!(f.currency.as_deref(), Some("CNY"));
-        assert_eq!(f.name.as_deref(), Some("贵州茅台"));
         // income single
         let s = fact_row_from(&fin_row(Statement::Income, PeriodType::Q3, DomainScope::Consolidated, 1.0), true);
         assert_eq!(s.qmode, QMode::Single);

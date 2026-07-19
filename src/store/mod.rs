@@ -169,9 +169,19 @@ pub struct FactRow {
     pub value: f64,
     pub currency: Option<String>,
     pub publish_date: Option<Date>,
-    /// Display name for the `symbols` stub. `None` ⇒ use `symbol`
-    /// itself (a later real fetch back-fills the true name).
-    pub name: Option<String>,
+}
+
+/// One `symbols`-dimension entry supplied alongside a fact batch. The
+/// `name` is always a **real** name — from an upstream fetch
+/// (`report` / `market`) or from resolving the code against the cninfo
+/// listing (`fact set`). Facts no longer carry a name of their own;
+/// this is the only channel that seeds / heals `symbols.name`, and the
+/// upsert is `DO UPDATE` so a later real name always wins (fixes the
+/// order-dependent name rot from the old `DO NOTHING` stub).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SymbolName {
+    pub symbol: String,
+    pub name: String,
 }
 
 /// One controlled-vocabulary metric definition. `unit_kind` is
@@ -252,16 +262,21 @@ impl FactStore {
     /// and returns `Err("row N: …")` on the first bad row; `atomic ==
     /// false` writes each row independently, collecting failures into
     /// [`BatchOutcome::skipped`].
-    pub fn upsert_facts(&self, rows: &[FactRow], atomic: bool) -> Result<BatchOutcome, SiftError> {
+    pub fn upsert_facts(
+        &self,
+        syms: &[SymbolName],
+        rows: &[FactRow],
+        atomic: bool,
+    ) -> Result<BatchOutcome, SiftError> {
         let now = now_stamp();
         with_duckdb(&self.db_path, DuckAccess::Write, |conn| {
             if atomic {
                 let tx = conn.unchecked_transaction().map_err(io)?;
-                let out = write_facts_prepared(&tx, rows, &now, true)?;
+                let out = write_facts_prepared(&tx, syms, rows, &now, true)?;
                 tx.commit().map_err(io)?;
                 Ok(out)
             } else {
-                write_facts_prepared(conn, rows, &now, false)
+                write_facts_prepared(conn, syms, rows, &now, false)
             }
         })
     }
@@ -274,7 +289,11 @@ impl FactStore {
     /// (no per-row attribution); returns the number of fact rows
     /// inserted/updated. Facts CHECK/FK are still enforced on the
     /// set-based insert.
-    pub fn upsert_facts_bulk(&self, rows: &[FactRow]) -> Result<usize, SiftError> {
+    pub fn upsert_facts_bulk(
+        &self,
+        syms: &[SymbolName],
+        rows: &[FactRow],
+    ) -> Result<usize, SiftError> {
         if rows.is_empty() {
             return Ok(0);
         }
@@ -282,7 +301,7 @@ impl FactStore {
         with_duckdb(&self.db_path, DuckAccess::Write, |conn| {
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS _stage_facts (
-                    symbol TEXT, name TEXT, market TEXT, fiscal_year INTEGER,
+                    symbol TEXT, fiscal_year INTEGER,
                     period_type TEXT, qmode TEXT, scope TEXT, raw_key TEXT,
                     source TEXT, value DOUBLE, currency TEXT, publish_date TEXT);
                  DELETE FROM _stage_facts;",
@@ -291,16 +310,8 @@ impl FactStore {
             {
                 let mut app = conn.appender("_stage_facts").map_err(io)?;
                 for r in rows {
-                    let market = market_of(&r.symbol).ok_or_else(|| {
-                        SiftError::Io(format!(
-                            "symbol {:?} lacks a .MARKET suffix (expected e.g. 600519.CN-A)",
-                            r.symbol
-                        ))
-                    })?;
                     app.append_row(duckdb::params![
                         r.symbol,
-                        r.name,
-                        market,
                         r.fiscal_year,
                         r.period_type.as_str(),
                         r.qmode.as_str(),
@@ -317,14 +328,9 @@ impl FactStore {
             }
             // symbols first (own statement → committed before the FK
             // check on the facts insert; DuckDB cannot satisfy the FK
-            // within one transaction).
-            conn.execute(
-                "INSERT INTO symbols (symbol, name, market, created_at) \
-                 SELECT DISTINCT symbol, COALESCE(name, symbol), market, ? \
-                 FROM _stage_facts ON CONFLICT DO NOTHING",
-                duckdb::params![now],
-            )
-            .map_err(io)?;
+            // within one transaction). Real names via `syms`; DO UPDATE
+            // heals any earlier placeholder.
+            write_symbols(conn, syms, &now)?;
             let n = conn
                 .execute(
                     "INSERT INTO facts \
@@ -524,24 +530,50 @@ const FACT_INSERT_SQL: &str = "INSERT INTO facts \
      ON CONFLICT DO UPDATE SET \
        value = excluded.value, currency = excluded.currency, \
        publish_date = excluded.publish_date, created_at = excluded.created_at";
-const SYMBOL_STUB_SQL: &str =
-    "INSERT INTO symbols (symbol, name, market, created_at) VALUES (?,?,?,?) ON CONFLICT DO NOTHING";
+const SYMBOL_UPSERT_SQL: &str = "INSERT INTO symbols (symbol, name, market, created_at) \
+     VALUES (?,?,?,?) ON CONFLICT (symbol) DO UPDATE SET name = excluded.name";
 
-/// Write a fact batch through two statements prepared once on `conn`
-/// (a plain connection or a transaction). In `atomic` mode a row
-/// failure returns `Err("row N: …")`; otherwise failures accumulate in
-/// [`BatchOutcome::skipped`].
+/// Upsert the `symbols` dimension from real names. `ON CONFLICT DO
+/// UPDATE` means a fresh real name (rename, or a `report`/`market`
+/// fetch after a manual entry) always replaces the stored one — never
+/// a placeholder, because every `SymbolName.name` is authoritative by
+/// construction.
+fn write_symbols(
+    conn: &duckdb::Connection,
+    syms: &[SymbolName],
+    now: &str,
+) -> Result<(), SiftError> {
+    let mut stmt = conn.prepare(SYMBOL_UPSERT_SQL).map_err(io)?;
+    for s in syms {
+        let market = market_of(&s.symbol).ok_or_else(|| {
+            SiftError::Io(format!(
+                "symbol {:?} lacks a .MARKET suffix (expected e.g. 600519.CN-A)",
+                s.symbol
+            ))
+        })?;
+        stmt.execute(duckdb::params![s.symbol, s.name, market, now])
+            .map_err(io)?;
+    }
+    Ok(())
+}
+
+/// Write a fact batch prepared once on `conn` (a plain connection or a
+/// transaction). Seeds the `symbols` dimension from `syms` first (FK
+/// requires the symbol row to exist), then inserts facts. In `atomic`
+/// mode a row failure returns `Err("row N: …")`; otherwise failures
+/// accumulate in [`BatchOutcome::skipped`].
 fn write_facts_prepared(
     conn: &duckdb::Connection,
+    syms: &[SymbolName],
     rows: &[FactRow],
     now: &str,
     atomic: bool,
 ) -> Result<BatchOutcome, SiftError> {
-    let mut sym = conn.prepare(SYMBOL_STUB_SQL).map_err(io)?;
+    write_symbols(conn, syms, now)?;
     let mut fct = conn.prepare(FACT_INSERT_SQL).map_err(io)?;
     let mut out = BatchOutcome::default();
     for (i, r) in rows.iter().enumerate() {
-        match write_one_fact(&mut sym, &mut fct, r, now) {
+        match write_one_fact(&mut fct, r, now) {
             Ok(()) => out.written += 1,
             Err(e) if atomic => return Err(SiftError::Io(format!("row {}: {e}", i + 1))),
             Err(e) => out.skipped.push((i + 1, format!("{e}"))),
@@ -550,24 +582,13 @@ fn write_facts_prepared(
     Ok(out)
 }
 
-/// Insert one fact + its `symbols` stub via prepared statements. The
-/// stub uses `name` (falling back to the symbol) and derives `market`
-/// from the symbol's `.MARKET` suffix.
+/// Insert one fact via a prepared statement. The `symbols` row it
+/// references is seeded separately by [`write_symbols`].
 fn write_one_fact(
-    sym: &mut duckdb::Statement,
     fct: &mut duckdb::Statement,
     r: &FactRow,
     now: &str,
 ) -> Result<(), SiftError> {
-    let market = market_of(&r.symbol).ok_or_else(|| {
-        SiftError::Io(format!(
-            "symbol {:?} lacks a .MARKET suffix (expected e.g. 600519.CN-A)",
-            r.symbol
-        ))
-    })?;
-    let stub_name = r.name.as_deref().unwrap_or(&r.symbol);
-    sym.execute(duckdb::params![r.symbol, stub_name, market, now])
-        .map_err(io)?;
     let publish = r.publish_date.map(fmt_date);
     fct.execute(duckdb::params![
         r.symbol,
@@ -755,8 +776,26 @@ mod tests {
             value,
             currency: None,
             publish_date: None,
-            name: None,
         }
+    }
+
+    /// Auto-derive the symbols dimension (name = symbol) for the rows'
+    /// distinct symbols, so tests can exercise `upsert_facts` without
+    /// spelling out `SymbolName`s. Tests that care about a specific
+    /// name build the `SymbolName`s themselves.
+    fn syms_of(rows: &[FactRow]) -> Vec<SymbolName> {
+        let mut seen = std::collections::HashSet::new();
+        rows.iter()
+            .filter(|r| seen.insert(r.symbol.clone()))
+            .map(|r| SymbolName {
+                symbol: r.symbol.clone(),
+                name: r.symbol.clone(),
+            })
+            .collect()
+    }
+
+    fn put(s: &FactStore, rows: &[FactRow], atomic: bool) -> Result<BatchOutcome, SiftError> {
+        s.upsert_facts(&syms_of(rows), rows, atomic)
     }
 
     #[test]
@@ -770,9 +809,7 @@ mod tests {
     #[test]
     fn upsert_then_query_round_trips_and_stubs_symbol() {
         let (_d, s) = temp_store();
-        let out = s
-            .upsert_facts(&[fact("600519.CN-A", "employee_comp", 1.5e9)], true)
-            .unwrap();
+        let out = put(&s, &[fact("600519.CN-A", "employee_comp", 1.5e9)], true).unwrap();
         assert_eq!(out.written, 1);
         let (cols, rows) = s
             .query("SELECT value FROM facts WHERE raw_key='employee_comp'")
@@ -780,7 +817,8 @@ mod tests {
         assert_eq!(cols, vec!["value"]);
         // Rust's f64 Display drops a `.0` on whole numbers.
         assert_eq!(rows, vec![vec!["1500000000".to_string()]]);
-        // Symbol stub auto-created, FK satisfied, name defaults to symbol.
+        // Symbol dimension seeded from the supplied SymbolName (here the
+        // `put` helper uses name = symbol), FK satisfied, market derived.
         let (_c, srows) = s
             .query("SELECT market, name FROM symbols WHERE symbol='600519.CN-A'")
             .unwrap();
@@ -790,8 +828,8 @@ mod tests {
     #[test]
     fn upsert_overwrites_same_primary_key() {
         let (_d, s) = temp_store();
-        s.upsert_facts(&[fact("600519.CN-A", "k", 1.0)], true).unwrap();
-        s.upsert_facts(&[fact("600519.CN-A", "k", 2.0)], true).unwrap();
+        put(&s, &[fact("600519.CN-A", "k", 1.0)], true).unwrap();
+        put(&s, &[fact("600519.CN-A", "k", 2.0)], true).unwrap();
         let (_c, rows) = s.query("SELECT value FROM facts WHERE raw_key='k'").unwrap();
         assert_eq!(rows, vec![vec!["2".to_string()]]);
     }
@@ -802,7 +840,7 @@ mod tests {
         let mut bad = fact("600519.CN-A", "k", 1.0);
         bad.fiscal_year = 1800; // violates CHECK(fiscal_year BETWEEN 1990 AND 2100)
         let rows = vec![fact("600519.CN-A", "ok", 1.0), bad];
-        let err = s.upsert_facts(&rows, true).unwrap_err();
+        let err = put(&s, &rows, true).unwrap_err();
         assert!(format!("{err}").contains("row 2"), "err: {err}");
         // Nothing written — the good first row rolled back too.
         let (_c, r) = s.query("SELECT count(*) FROM facts").unwrap();
@@ -819,7 +857,7 @@ mod tests {
             bad,
             fact("600519.CN-A", "b", 2.0),
         ];
-        let out = s.upsert_facts(&rows, false).unwrap();
+        let out = put(&s, &rows, false).unwrap();
         assert_eq!(out.written, 2);
         assert_eq!(out.skipped.len(), 1);
         assert_eq!(out.skipped[0].0, 2);
@@ -831,7 +869,7 @@ mod tests {
         let mut r = fact("600519.CN-A", "k", 1.0);
         r.qmode = QMode::Single;
         r.period_type = PeriodType::Annual; // single requires q1..q4
-        assert!(s.upsert_facts(&[r], true).is_err());
+        assert!(put(&s, &[r], true).is_err());
     }
 
     #[test]
@@ -840,7 +878,7 @@ mod tests {
         let mut r = fact("600519.CN-A", "TOTAL_OPERATE_INCOME", 42.0);
         r.period_type = PeriodType::Q3;
         r.qmode = QMode::Cumulative;
-        s.upsert_facts(&[r], true).unwrap();
+        put(&s, &[r], true).unwrap();
         let (_c, rows) = s
             .query("SELECT period, period_end, key, mapped FROM v_facts")
             .unwrap();
@@ -858,14 +896,15 @@ mod tests {
     #[test]
     fn query_is_read_only() {
         let (_d, s) = temp_store();
-        s.upsert_facts(&[fact("600519.CN-A", "k", 1.0)], true).unwrap();
+        put(&s, &[fact("600519.CN-A", "k", 1.0)], true).unwrap();
         assert!(s.query("DELETE FROM facts").is_err());
     }
 
     #[test]
     fn execute_deletes_and_reports_affected() {
         let (_d, s) = temp_store();
-        s.upsert_facts(
+        put(
+            &s,
             &[
                 fact("600519.CN-A", "a", 1.0),
                 fact("600519.CN-A", "b", 2.0),
@@ -880,7 +919,7 @@ mod tests {
     #[test]
     fn execute_select_returns_rows() {
         let (_d, s) = temp_store();
-        s.upsert_facts(&[fact("600519.CN-A", "k", 7.0)], true).unwrap();
+        put(&s, &[fact("600519.CN-A", "k", 7.0)], true).unwrap();
         match s.execute("SELECT value FROM facts").unwrap() {
             SqlOutcome::Rows(cols, rows) => {
                 assert_eq!(cols, vec!["value"]);
@@ -893,7 +932,7 @@ mod tests {
     #[test]
     fn execute_rejects_invalid_data_even_via_hatch() {
         let (_d, s) = temp_store();
-        s.upsert_facts(&[fact("600519.CN-A", "k", 1.0)], true).unwrap();
+        put(&s, &[fact("600519.CN-A", "k", 1.0)], true).unwrap();
         // Escape hatch can still not bypass the CHECK constraint.
         let err = s
             .execute("INSERT INTO facts VALUES ('600519.CN-A',2024,'ytd','na','na','k','manual',1.0,NULL,NULL,now())")
@@ -959,7 +998,7 @@ mod tests {
         let (_d, s) = temp_store();
         let mut r = fact("600519.CN-A", "TOTAL_OPERATE_INCOME", 1.0);
         r.source = "eastmoney".into();
-        s.upsert_facts(&[r], true).unwrap();
+        put(&s, &[r], true).unwrap();
         s.upsert_metrics(&[metric("revenue", "amount")], true).unwrap();
         s.upsert_map(&[mapping("eastmoney", "TOTAL_OPERATE_INCOME", "revenue")], true)
             .unwrap();
@@ -970,14 +1009,23 @@ mod tests {
     }
 
     #[test]
-    fn bulk_upsert_stubs_symbols_and_upserts_facts() {
+    fn bulk_upsert_seeds_symbols_and_upserts_facts() {
         let (_d, s) = temp_store();
         let mut a = fact("600519.CN-A", "TOTAL_OPERATE_INCOME", 100.0);
-        a.name = Some("贵州茅台".into());
         a.source = "screen".into();
         let b = fact("000001.CN-A", "WEIGHTAVG_ROE", 10.0);
-        assert_eq!(s.upsert_facts_bulk(&[a.clone(), b]).unwrap(), 2);
-        // Symbol stub carries the real name via COALESCE.
+        let syms = vec![
+            SymbolName {
+                symbol: "600519.CN-A".into(),
+                name: "贵州茅台".into(),
+            },
+            SymbolName {
+                symbol: "000001.CN-A".into(),
+                name: "平安银行".into(),
+            },
+        ];
+        assert_eq!(s.upsert_facts_bulk(&syms, &[a.clone(), b]).unwrap(), 2);
+        // Symbol dimension carries the real name.
         let (_c, rows) = s
             .query("SELECT name FROM symbols WHERE symbol='600519.CN-A'")
             .unwrap();
@@ -985,7 +1033,7 @@ mod tests {
         // Re-run overwrites (idempotent UPSERT).
         let mut a2 = a;
         a2.value = 200.0;
-        s.upsert_facts_bulk(&[a2]).unwrap();
+        s.upsert_facts_bulk(&syms[..1], &[a2]).unwrap();
         let (_c, rows) = s
             .query("SELECT value FROM facts WHERE raw_key='TOTAL_OPERATE_INCOME'")
             .unwrap();
@@ -993,9 +1041,31 @@ mod tests {
     }
 
     #[test]
+    fn later_real_name_heals_earlier_placeholder() {
+        let (_d, s) = temp_store();
+        // Manual-style write first: name = symbol (placeholder).
+        put(&s, &[fact("000001.CN-A", "manual_x", 1.0)], true).unwrap();
+        let (_c, rows) = s
+            .query("SELECT name FROM symbols WHERE symbol='000001.CN-A'")
+            .unwrap();
+        assert_eq!(rows, vec![vec!["000001.CN-A".to_string()]]);
+        // A later real-name write (report/market) UPSERTs the name.
+        let syms = vec![SymbolName {
+            symbol: "000001.CN-A".into(),
+            name: "平安银行".into(),
+        }];
+        s.upsert_facts(&syms, &[fact("000001.CN-A", "revenue", 2.0)], true)
+            .unwrap();
+        let (_c, rows) = s
+            .query("SELECT name FROM symbols WHERE symbol='000001.CN-A'")
+            .unwrap();
+        assert_eq!(rows, vec![vec!["平安银行".to_string()]]);
+    }
+
+    #[test]
     fn delete_fact_by_key() {
         let (_d, s) = temp_store();
-        s.upsert_facts(&[fact("600519.CN-A", "k", 1.0)], true).unwrap();
+        put(&s, &[fact("600519.CN-A", "k", 1.0)], true).unwrap();
         let n = s
             .delete_fact(&FactKey {
                 symbol: "600519.CN-A".into(),

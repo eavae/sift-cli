@@ -7,6 +7,8 @@
 //! snapshot. Friendly-name screening (roe, revenue …) is left to
 //! `sift sql` over `v_facts`; `--where` here speaks raw EM columns.
 
+use std::io::Write;
+
 use time::OffsetDateTime;
 
 use crate::app::AppContext;
@@ -14,7 +16,7 @@ use crate::domain::period::most_recent_filed;
 use crate::domain::Period;
 use crate::error::SiftError;
 use crate::fetch::market::load_snapshot;
-use crate::output::{query::render_query, Format};
+use crate::output::{io_err, query::render_query, Format};
 use crate::service::facts;
 use crate::sources::eastmoney_screen::MarketRow;
 
@@ -128,6 +130,16 @@ pub fn run(args: MarketArgs, ctx: &AppContext, fmt: Format) -> Result<(), SiftEr
     view.truncate(args.limit);
 
     let cols = printed_columns(&args, &conds);
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+
+    // JSON is typed straight from the row (numbers stay numbers); table
+    // and TSV go through the stringly `render_query`. The EM screen
+    // schema is fixed, so no per-cell type inference is needed.
+    if let Format::Json = fmt {
+        return render_market_json(&mut handle, &view, &cols);
+    }
+
     let header: Vec<String> = std::iter::once("code".to_string())
         .chain(std::iter::once("name".to_string()))
         .chain(cols.iter().cloned())
@@ -145,9 +157,46 @@ pub fn run(args: MarketArgs, ctx: &AppContext, fmt: Format) -> Result<(), SiftEr
         })
         .collect();
 
-    let stdout = std::io::stdout();
-    let mut handle = stdout.lock();
     render_query(&mut handle, fmt, &header, &body)
+}
+
+/// Typed NDJSON for `sift market`: `code` / `name` as strings, every
+/// printed metric as a JSON **number** (or `null` when this issuer
+/// lacks that column). The EM screen schema is fixed (a constant column
+/// list, all `f64`), so we serialize straight from the typed row rather
+/// than round-tripping through the stringly `render_query` path — no
+/// type inference, no leading-zero hazards.
+fn render_market_json<W: Write>(
+    out: &mut W,
+    view: &[&MarketRow],
+    cols: &[String],
+) -> Result<(), SiftError> {
+    use serde_json::{Map, Value};
+    for r in view {
+        let mut obj = Map::with_capacity(cols.len() + 2);
+        obj.insert("code".into(), Value::String(r.code.clone()));
+        obj.insert("name".into(), Value::String(r.name.clone()));
+        for c in cols {
+            let v = r.metrics.get(c).map_or(Value::Null, |&n| json_number(n));
+            obj.insert(c.clone(), v);
+        }
+        serde_json::to_writer(&mut *out, &Value::Object(obj))
+            .map_err(|e| SiftError::Internal(format!("ndjson serialize: {e}")))?;
+        out.write_all(b"\n").map_err(io_err)?;
+    }
+    Ok(())
+}
+
+/// `f64` → JSON number. Whole values in `i64` range serialize as
+/// integers (`14523000000`, not `14523000000.0`); everything else stays
+/// a float. Non-finite (NaN / ±inf) has no JSON number form → `null`.
+fn json_number(n: f64) -> serde_json::Value {
+    use serde_json::{Number, Value};
+    if n.fract() == 0.0 && (i64::MIN as f64..=i64::MAX as f64).contains(&n) {
+        Value::Number(Number::from(n as i64))
+    } else {
+        Number::from_f64(n).map_or(Value::Null, Value::Number)
+    }
 }
 
 /// Ordered, deduped metric columns to print: `--show`, then `--sort`,
@@ -283,5 +332,45 @@ mod tests {
         for a in AMOUNT_COLS {
             assert!(!NA_COLS.contains(&a), "{a} in both lists");
         }
+    }
+
+    #[test]
+    fn json_number_ints_have_no_fraction_floats_kept() {
+        use serde_json::Value;
+        assert_eq!(json_number(14523000000.0), Value::from(14523000000i64));
+        assert_eq!(json_number(2.83), Value::from(2.83));
+        assert_eq!(json_number(-49478429211.96), Value::from(-49478429211.96));
+        // Non-finite has no JSON number form.
+        assert_eq!(json_number(f64::NAN), Value::Null);
+        assert_eq!(json_number(f64::INFINITY), Value::Null);
+    }
+
+    #[test]
+    fn market_json_types_metrics_as_numbers_code_as_string() {
+        let mut metrics = std::collections::HashMap::new();
+        metrics.insert("WEIGHTAVG_ROE".to_string(), 15.5);
+        metrics.insert("PARENT_NETPROFIT".to_string(), 100.0);
+        let row = MarketRow {
+            code: "000001".into(),
+            name: "平安银行".into(),
+            board_name: None,
+            notice_date: None,
+            metrics,
+        };
+        let cols = vec![
+            "WEIGHTAVG_ROE".to_string(),
+            "PARENT_NETPROFIT".to_string(),
+            "ABSENT".to_string(),
+        ];
+        let mut buf = Vec::new();
+        render_market_json(&mut buf, &[&row], &cols).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        // Zero-padded code stays a string, never coerced to a number.
+        assert_eq!(v["code"], serde_json::Value::from("000001"));
+        assert_eq!(v["name"], serde_json::Value::from("平安银行"));
+        assert_eq!(v["WEIGHTAVG_ROE"], serde_json::Value::from(15.5));
+        assert_eq!(v["PARENT_NETPROFIT"], serde_json::Value::from(100i64));
+        // A column this issuer lacks → null, not "".
+        assert_eq!(v["ABSENT"], serde_json::Value::Null);
     }
 }

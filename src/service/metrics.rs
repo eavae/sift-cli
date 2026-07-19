@@ -46,7 +46,11 @@ pub fn ingest_metrics_tsv(
             return Err(SiftError::Parse(format!("line {line}: {why}")));
         }
     }
-    let mut out = store(app)?.upsert_metrics(&rows, atomic)?;
+    // `from_fields` already validated unit_kind and PK-conflicts UPSERT,
+    // so the only per-row failures are parse errors (physical lines);
+    // the store itself won't skip rows here.
+    let metric_rows: Vec<MetricRow> = rows.into_iter().map(|(_, r)| r).collect();
+    let mut out = store(app)?.upsert_metrics(&metric_rows, atomic)?;
     if !atomic && !parse_errs.is_empty() {
         out.skipped.extend(parse_errs);
         out.skipped.sort_by_key(|(i, _)| *i);
@@ -93,12 +97,12 @@ pub fn ingest_map_tsv(
 ) -> Result<BatchOutcome, SiftError> {
     let (rows, parse_errs) = tsv::parse_tsv::<MapRow>(input);
     let known = known_std_keys(app)?;
-    // Preflight indices are 1-based over the successfully-parsed rows.
+    // Preflight failures carry the row's physical file line (same
+    // numbering as parse errors), so the FK check points at the file.
     let preflight: Vec<(usize, String)> = rows
         .iter()
-        .enumerate()
         .filter(|(_, r)| !known.contains(&r.std_key))
-        .map(|(i, r)| (i + 1, unknown_std_key(&r.std_key).to_string()))
+        .map(|(line, r)| (*line, unknown_std_key_msg(&r.std_key)))
         .collect();
 
     if atomic {
@@ -108,16 +112,17 @@ pub fn ingest_map_tsv(
         if let Some((line, why)) = preflight.first() {
             return Err(SiftError::Parse(format!("line {line}: {why}")));
         }
-        return store(app)?.upsert_map(&rows, true);
+        let map_rows: Vec<MapRow> = rows.into_iter().map(|(_, r)| r).collect();
+        return store(app)?.upsert_map(&map_rows, true);
     }
 
-    // Skip-invalid: drop preflight failures, write the rest, and merge
-    // both failure kinds into the outcome.
-    let bad: HashSet<usize> = preflight.iter().map(|(i, _)| *i).collect();
+    // Skip-invalid: drop preflight failures (by physical line), write
+    // the rest, and merge both failure kinds into the outcome. The FK
+    // is pre-checked here, so the store itself won't skip rows.
+    let bad_lines: HashSet<usize> = preflight.iter().map(|(i, _)| *i).collect();
     let good: Vec<MapRow> = rows
         .into_iter()
-        .enumerate()
-        .filter(|(i, _)| !bad.contains(&(i + 1)))
+        .filter(|(line, _)| !bad_lines.contains(line))
         .map(|(_, r)| r)
         .collect();
     let mut out = store(app)?.upsert_map(&good, false)?;
@@ -180,10 +185,12 @@ fn known_std_keys(app: &AppContext) -> Result<HashSet<String>, SiftError> {
     Ok(store(app)?.metric_keys()?.into_iter().collect())
 }
 
+fn unknown_std_key_msg(std_key: &str) -> String {
+    format!("unknown std_key {std_key:?}; run `sift metric add {std_key}` first")
+}
+
 fn unknown_std_key(std_key: &str) -> SiftError {
-    SiftError::Parse(format!(
-        "unknown std_key {std_key:?}; run `sift metric add {std_key}` first"
-    ))
+    SiftError::Parse(unknown_std_key_msg(std_key))
 }
 
 fn validated_unit_kind(s: &str) -> Result<&str, SiftError> {

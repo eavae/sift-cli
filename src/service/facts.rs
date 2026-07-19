@@ -68,7 +68,7 @@ pub fn ingest(
     rows: &[FactRow],
     atomic: bool,
 ) -> Result<BatchOutcome, SiftError> {
-    store(app)?.upsert_facts(syms, rows, atomic)
+    store(app)?.upsert_facts(syms, rows, atomic, None)
 }
 
 /// Map one `report` row to a [`FactRow`]. `qmode` is derived from the
@@ -140,7 +140,7 @@ pub fn ingest_statement(
     };
     let syms = syms_from(rows.iter().map(|r| (r.symbol.display_symbol(), r.name.as_str())));
     let facts: Vec<FactRow> = rows.iter().map(|r| fact_row_from(r, single)).collect();
-    st.upsert_facts(&syms, &facts, true).map(Some)
+    st.upsert_facts(&syms, &facts, true, None).map(Some)
 }
 
 fn non_blank(s: &str) -> Option<String> {
@@ -209,6 +209,8 @@ pub fn ingest_market(
 /// parse failure aborts the whole batch (error names the line); in
 /// skip mode parse failures are merged into [`BatchOutcome::skipped`].
 pub fn ingest_tsv(app: &AppContext, input: &str, atomic: bool) -> Result<BatchOutcome, SiftError> {
+    // `rows` are tagged with their physical file line; failures are
+    // reported on that same numbering all the way down.
     let (rows, parse_errs) = tsv::parse_tsv::<FactRow>(input);
     if atomic {
         if let Some((line, why)) = parse_errs.first() {
@@ -218,25 +220,30 @@ pub fn ingest_tsv(app: &AppContext, input: &str, atomic: bool) -> Result<BatchOu
     // Resolve + validate every distinct symbol against the listing.
     // In atomic mode an unresolvable symbol aborts the batch; in skip
     // mode its rows are dropped and recorded in `skipped`.
-    let (syms, bad) = resolve_row_symbols(app, &rows);
+    let (syms, bad) = resolve_row_symbols(app, rows.iter().map(|(_, r)| r.symbol.as_str()));
     if atomic {
         if let Some((_symbol, why)) = bad.iter().next() {
             // `why` already names the offending code.
             return Err(SiftError::Parse(why.clone()));
         }
     }
-    let kept: Vec<FactRow> = rows
-        .iter()
-        .filter(|r| !bad.contains_key(&r.symbol))
-        .cloned()
-        .collect();
-    let mut out = store(app)?.upsert_facts(&syms, &kept, atomic)?;
-    if !atomic {
-        for (i, r) in rows.iter().enumerate() {
-            if let Some(why) = bad.get(&r.symbol) {
-                out.skipped.push((i + 1, why.clone()));
+    // Keep the resolvable rows (with their file lines) for the store;
+    // the rest become skips carrying their own file line.
+    let mut kept = Vec::new();
+    let mut kept_lines = Vec::new();
+    let mut skipped = Vec::new();
+    for (line, r) in &rows {
+        match bad.get(&r.symbol) {
+            Some(why) => skipped.push((*line, why.clone())),
+            None => {
+                kept.push(r.clone());
+                kept_lines.push(*line);
             }
         }
+    }
+    let mut out = store(app)?.upsert_facts(&syms, &kept, atomic, Some(&kept_lines))?;
+    if !atomic {
+        out.skipped.extend(skipped);
         out.skipped.extend(parse_errs);
         out.skipped.sort_by_key(|(i, _)| *i);
     }
@@ -282,21 +289,21 @@ fn resolve_symbol(app: &AppContext, canonical: &str) -> Result<SymbolName, SiftE
 /// failed validation (never errors itself — the caller decides
 /// abort-vs-skip). Each distinct code is resolved once; the first
 /// cache-cold lookup warms the whole listing.
-fn resolve_row_symbols(
+fn resolve_row_symbols<'a>(
     app: &AppContext,
-    rows: &[FactRow],
+    symbols: impl Iterator<Item = &'a str>,
 ) -> (Vec<SymbolName>, std::collections::HashMap<String, String>) {
     let mut syms = Vec::new();
     let mut bad = std::collections::HashMap::new();
     let mut seen = std::collections::HashSet::new();
-    for r in rows {
-        if !seen.insert(r.symbol.clone()) {
+    for symbol in symbols {
+        if !seen.insert(symbol.to_string()) {
             continue;
         }
-        match resolve_symbol(app, &r.symbol) {
+        match resolve_symbol(app, symbol) {
             Ok(s) => syms.push(s),
             Err(e) => {
-                bad.insert(r.symbol.clone(), format!("{e}"));
+                bad.insert(symbol.to_string(), format!("{e}"));
             }
         }
     }

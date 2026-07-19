@@ -96,6 +96,6 @@ pub(crate) fn read_stdin_batch() -> Result<String, SiftError> {
 pub(crate) fn summarize(out: &BatchOutcome, what: &str) {
     eprintln!("[info] wrote {} {what}(s)", out.written);
     for (line, why) in &out.skipped {
-        eprintln!("[warn] skipped row {line}: {why}");
+        eprintln!("[warn] skipped line {line}: {why}");
     }
 }

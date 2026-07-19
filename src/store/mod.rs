@@ -262,21 +262,27 @@ impl FactStore {
     /// and returns `Err("row N: …")` on the first bad row; `atomic ==
     /// false` writes each row independently, collecting failures into
     /// [`BatchOutcome::skipped`].
+    /// `labels`, when `Some`, supplies the number to report for each row
+    /// on failure (parallel to `rows`) — the caller passes physical TSV
+    /// file lines so `sift fact set` batch errors point at the actual
+    /// line. `None` falls back to the 1-based position in `rows` (report
+    /// / market / single writes, where positional is what makes sense).
     pub fn upsert_facts(
         &self,
         syms: &[SymbolName],
         rows: &[FactRow],
         atomic: bool,
+        labels: Option<&[usize]>,
     ) -> Result<BatchOutcome, SiftError> {
         let now = now_stamp();
         with_duckdb(&self.db_path, DuckAccess::Write, |conn| {
             if atomic {
                 let tx = conn.unchecked_transaction().map_err(io)?;
-                let out = write_facts_prepared(&tx, syms, rows, &now, true)?;
+                let out = write_facts_prepared(&tx, syms, rows, &now, true, labels)?;
                 tx.commit().map_err(io)?;
                 Ok(out)
             } else {
-                write_facts_prepared(conn, syms, rows, &now, false)
+                write_facts_prepared(conn, syms, rows, &now, false, labels)
             }
         })
     }
@@ -568,18 +574,21 @@ fn write_facts_prepared(
     rows: &[FactRow],
     now: &str,
     atomic: bool,
+    labels: Option<&[usize]>,
 ) -> Result<BatchOutcome, SiftError> {
     write_symbols(conn, syms, now)?;
     let mut fct = conn.prepare(FACT_INSERT_SQL).map_err(io)?;
     let mut out = BatchOutcome::default();
     for (i, r) in rows.iter().enumerate() {
-        // `write_one_fact` returns the bare DuckDB message; we add the
-        // `row N:` context exactly once here (no double `io error:`
-        // wrapping).
+        // Report the caller's label (physical TSV line) when given, else
+        // the 1-based position. `write_one_fact` returns the bare DuckDB
+        // message; the `row N:` context is added exactly once here (no
+        // double `io error:` wrapping).
+        let n = labels.map_or(i + 1, |l| l[i]);
         match write_one_fact(&mut fct, r, now) {
             Ok(()) => out.written += 1,
-            Err(e) if atomic => return Err(SiftError::Io(format!("row {}: {e}", i + 1))),
-            Err(e) => out.skipped.push((i + 1, e)),
+            Err(e) if atomic => return Err(SiftError::Io(format!("row {n}: {e}"))),
+            Err(e) => out.skipped.push((n, e)),
         }
     }
     Ok(out)
@@ -796,7 +805,7 @@ mod tests {
     }
 
     fn put(s: &FactStore, rows: &[FactRow], atomic: bool) -> Result<BatchOutcome, SiftError> {
-        s.upsert_facts(&syms_of(rows), rows, atomic)
+        s.upsert_facts(&syms_of(rows), rows, atomic, None)
     }
 
     #[test]
@@ -862,6 +871,21 @@ mod tests {
         assert_eq!(out.written, 2);
         assert_eq!(out.skipped.len(), 1);
         assert_eq!(out.skipped[0].0, 2);
+    }
+
+    #[test]
+    fn labels_override_reported_row_number() {
+        let (_d, s) = temp_store();
+        let mut bad = fact("600519.CN-A", "k", 1.0);
+        bad.fiscal_year = 1800;
+        let rows = vec![fact("600519.CN-A", "a", 1.0), bad];
+        let syms = syms_of(&rows);
+        // Caller supplies physical file lines 5 and 9 for the two rows.
+        let out = s
+            .upsert_facts(&syms, &rows, false, Some(&[5, 9]))
+            .unwrap();
+        assert_eq!(out.written, 1);
+        assert_eq!(out.skipped[0].0, 9, "reports the label, not the index");
     }
 
     #[test]
@@ -1055,7 +1079,7 @@ mod tests {
             symbol: "000001.CN-A".into(),
             name: "平安银行".into(),
         }];
-        s.upsert_facts(&syms, &[fact("000001.CN-A", "revenue", 2.0)], true)
+        s.upsert_facts(&syms, &[fact("000001.CN-A", "revenue", 2.0)], true, None)
             .unwrap();
         let (_c, rows) = s
             .query("SELECT name FROM symbols WHERE symbol='000001.CN-A'")
